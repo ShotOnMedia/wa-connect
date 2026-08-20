@@ -1,17 +1,24 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { api } from './api'
 
 const conversations = ref([])
 const messages = ref([])
 const selectedId = ref(null)
 const loading = ref(false)
+const sending = ref(false)
 const error = ref('')
 const reply = ref('')
+const messagePane = ref(null)
 
 const selectedConversation = computed(() =>
   conversations.value.find((item) => item.id === selectedId.value) || null,
 )
+
+async function scrollToBottom() {
+  await nextTick()
+  if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight
+}
 
 async function loadConversations() {
   try {
@@ -30,6 +37,7 @@ async function selectConversation(id) {
   error.value = ''
   try {
     messages.value = await api.messages(id)
+    await scrollToBottom()
   } catch (err) {
     error.value = err.message
   } finally {
@@ -40,9 +48,21 @@ async function selectConversation(id) {
 async function sendReply() {
   const conversation = selectedConversation.value
   const text = reply.value.trim()
-  if (!conversation || !text) return
+  if (!conversation || !text || sending.value) return
 
-  error.value = 'Reply endpoint is wired, but the inbox still needs phone-number metadata before live sending can be enabled.'
+  sending.value = true
+  error.value = ''
+  try {
+    const message = await api.sendText(conversation.id, text)
+    messages.value.push(message)
+    reply.value = ''
+    conversation.last_message_at = message.created_at
+    await scrollToBottom()
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    sending.value = false
+  }
 }
 
 function formatTime(value) {
@@ -111,7 +131,7 @@ onMounted(loadConversations)
           <span class="status-pill">{{ selectedConversation.status }}</span>
         </header>
 
-        <div class="messages">
+        <div ref="messagePane" class="messages">
           <div v-if="loading" class="center-state">Loading messages…</div>
           <article
             v-for="message in messages"
@@ -129,7 +149,7 @@ onMounted(loadConversations)
 
         <form class="composer" @submit.prevent="sendReply">
           <textarea v-model="reply" rows="1" placeholder="Type a WhatsApp reply…" />
-          <button type="submit">Send</button>
+          <button type="submit" :disabled="sending || !reply.trim()">{{ sending ? 'Sending…' : 'Send' }}</button>
         </form>
       </template>
 

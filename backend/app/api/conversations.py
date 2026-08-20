@@ -35,13 +35,17 @@ def list_messages(conversation_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{conversation_id}/messages", response_model=MessageOut)
 async def send_message(conversation_id: int, request: SendTextRequest, db: Session = Depends(get_db)):
-    conversation = db.get(Conversation, conversation_id)
+    conversation = db.scalar(
+        select(Conversation)
+        .options(selectinload(Conversation.contact))
+        .where(Conversation.id == conversation_id)
+    )
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    phone_number = db.get(WhatsAppPhoneNumber, request.phone_number_id)
-    if not phone_number or phone_number.id != conversation.phone_number_id:
-        raise HTTPException(status_code=400, detail="Phone number does not belong to this conversation")
+    phone_number = db.get(WhatsAppPhoneNumber, conversation.phone_number_id)
+    if not phone_number:
+        raise HTTPException(status_code=503, detail="Conversation phone number is unavailable")
 
     access_token = phone_number.access_token or settings.meta_access_token
     if not access_token:
@@ -58,7 +62,12 @@ async def send_message(conversation_id: int, request: SendTextRequest, db: Sessi
     db.flush()
 
     try:
-        result = await send_text_message(phone_number.phone_number_id, access_token, request.to, request.text)
+        result = await send_text_message(
+            phone_number.phone_number_id,
+            access_token,
+            conversation.contact.wa_id,
+            request.text,
+        )
         meta_messages = result.get("messages", [])
         message.meta_message_id = meta_messages[0].get("id") if meta_messages else None
         message.status = MessageStatus.SENT

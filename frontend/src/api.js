@@ -17,8 +17,8 @@ async function request(path, options = {}) {
 export const api = {
   conversations: () => request('/conversations'),
   messages: (conversationId) => request(`/conversations/${conversationId}/messages`),
-  sendText: (conversationId, payload) => request(`/conversations/${conversationId}/messages`, {
+  sendText: (conversationId, text) => request(`/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ text }),
   }),
 }

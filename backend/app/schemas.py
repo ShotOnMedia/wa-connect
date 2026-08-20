@@ -17,6 +17,7 @@ class ConversationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    phone_number_id: int
     status: ConversationStatus
     last_message_at: datetime | None
     contact: ContactOut
@@ -36,6 +37,4 @@ class MessageOut(BaseModel):
 
 
 class SendTextRequest(BaseModel):
-    phone_number_id: int = Field(gt=0)
-    to: str = Field(min_length=5, max_length=40)
     text: str = Field(min_length=1, max_length=4096)
