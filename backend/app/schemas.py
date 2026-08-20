@@ -7,7 +7,6 @@ from app.models import ConversationStatus, MessageDirection, MessageStatus
 
 class ContactOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     wa_id: str
     name: str | None
@@ -15,7 +14,6 @@ class ContactOut(BaseModel):
 
 class ConversationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     phone_number_id: int
     status: ConversationStatus
@@ -25,7 +23,6 @@ class ConversationOut(BaseModel):
 
 class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     meta_message_id: str | None
     direction: MessageDirection
@@ -44,10 +41,7 @@ class WhatsAppConnectionCreate(BaseModel):
     workspace_name: str = Field(min_length=2, max_length=150)
     workspace_slug: str = Field(min_length=2, max_length=150, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     waba_id: str = Field(min_length=2, max_length=64)
-    account_name: str = Field(default="", max_length=150)
     phone_number_id: str = Field(min_length=2, max_length=64)
-    display_phone_number: str = Field(default="", max_length=40)
-    verified_name: str = Field(default="", max_length=150)
     access_token: str = Field(min_length=10)
 
     @field_validator("workspace_name", "waba_id", "phone_number_id", "access_token")
@@ -72,3 +66,27 @@ class WhatsAppConnectionOut(BaseModel):
     verified_name: str | None
     active: bool
     has_access_token: bool
+
+
+class WhatsAppConnectionVerify(BaseModel):
+    waba_id: str = Field(min_length=2, max_length=64)
+    phone_number_id: str = Field(min_length=2, max_length=64)
+    access_token: str = Field(min_length=10)
+
+
+class WhatsAppConnectionHealth(BaseModel):
+    connected: bool
+    waba_id: str
+    account_name: str | None = None
+    phone_number_id: str
+    display_phone_number: str | None = None
+    verified_name: str | None = None
+    quality_rating: str | None = None
+    platform_type: str | None = None
+    code_verification_status: str | None = None
+
+
+class WebhookSetupOut(BaseModel):
+    callback_path: str
+    verify_token: str
+    app_secret_configured: bool
