@@ -3,165 +3,35 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { api } from './api'
 
 const view = ref('inbox')
-const conversations = ref([])
-const messages = ref([])
-const connections = ref([])
-const selectedId = ref(null)
-const loading = ref(false)
-const sending = ref(false)
-const savingConnection = ref(false)
-const error = ref('')
-const success = ref('')
-const reply = ref('')
-const messagePane = ref(null)
-const connectionForm = ref({
-  workspace_name: 'Default Workspace',
-  workspace_slug: 'default',
-  waba_id: '',
-  account_name: '',
-  phone_number_id: '',
-  display_phone_number: '',
-  verified_name: '',
-  access_token: '',
-})
-
+const conversations = ref([]), messages = ref([]), connections = ref([])
+const selectedId = ref(null), loading = ref(false), sending = ref(false), savingConnection = ref(false), testingConnection = ref(false)
+const error = ref(''), success = ref(''), reply = ref(''), messagePane = ref(null), webhook = ref(null), preview = ref(null), health = ref({})
+const connectionForm = ref({ workspace_name: 'Default Workspace', workspace_slug: 'default', waba_id: '', phone_number_id: '', access_token: '' })
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedId.value) || null)
 
-async function scrollToBottom() {
-  await nextTick()
-  if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight
-}
-
-async function loadConversations() {
-  try {
-    conversations.value = await api.conversations()
-    if (!selectedId.value && conversations.value.length) await selectConversation(conversations.value[0].id)
-  } catch (err) { error.value = err.message }
-}
-
-async function selectConversation(id) {
-  selectedId.value = id
-  loading.value = true
-  error.value = ''
-  try {
-    messages.value = await api.messages(id)
-    await scrollToBottom()
-  } catch (err) { error.value = err.message }
-  finally { loading.value = false }
-}
-
-async function sendReply() {
-  const conversation = selectedConversation.value
-  const text = reply.value.trim()
-  if (!conversation || !text || sending.value) return
-  sending.value = true
-  error.value = ''
-  try {
-    const message = await api.sendText(conversation.id, text)
-    messages.value.push(message)
-    reply.value = ''
-    conversation.last_message_at = message.created_at
-    await scrollToBottom()
-  } catch (err) { error.value = err.message }
-  finally { sending.value = false }
-}
-
-async function openSettings() {
-  view.value = 'settings'
-  error.value = ''
-  success.value = ''
-  try { connections.value = await api.whatsappConnections() }
-  catch (err) { error.value = err.message }
-}
-
-async function saveConnection() {
-  if (savingConnection.value) return
-  savingConnection.value = true
-  error.value = ''
-  success.value = ''
-  try {
-    const created = await api.connectWhatsApp(connectionForm.value)
-    connections.value.push(created)
-    connectionForm.value = { ...connectionForm.value, waba_id: '', account_name: '', phone_number_id: '', display_phone_number: '', verified_name: '', access_token: '' }
-    success.value = 'WhatsApp Business number connected. Configure the Meta webhook next.'
-  } catch (err) { error.value = err.message }
-  finally { savingConnection.value = false }
-}
-
-function formatTime(value) {
-  if (!value) return ''
-  return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
-}
-
+async function scrollToBottom(){ await nextTick(); if(messagePane.value) messagePane.value.scrollTop=messagePane.value.scrollHeight }
+async function loadConversations(){ try{ conversations.value=await api.conversations(); if(!selectedId.value&&conversations.value.length) await selectConversation(conversations.value[0].id) }catch(err){error.value=err.message} }
+async function selectConversation(id){ selectedId.value=id; loading.value=true; error.value=''; try{messages.value=await api.messages(id); await scrollToBottom()}catch(err){error.value=err.message}finally{loading.value=false} }
+async function sendReply(){ const c=selectedConversation.value,text=reply.value.trim(); if(!c||!text||sending.value)return; sending.value=true;error.value='';try{const m=await api.sendText(c.id,text);messages.value.push(m);reply.value='';c.last_message_at=m.created_at;await scrollToBottom()}catch(err){error.value=err.message}finally{sending.value=false} }
+async function openSettings(){ view.value='settings';error.value='';success.value='';try{[connections.value,webhook.value]=await Promise.all([api.whatsappConnections(),api.webhookSetup()])}catch(err){error.value=err.message} }
+async function testConnection(){ testingConnection.value=true;error.value='';success.value='';preview.value=null;try{preview.value=await api.verifyWhatsApp({waba_id:connectionForm.value.waba_id,phone_number_id:connectionForm.value.phone_number_id,access_token:connectionForm.value.access_token});success.value='Meta connection verified successfully.'}catch(err){error.value=err.message}finally{testingConnection.value=false} }
+async function saveConnection(){ if(savingConnection.value)return;savingConnection.value=true;error.value='';success.value='';try{const created=await api.connectWhatsApp(connectionForm.value);connections.value.push(created);preview.value=null;connectionForm.value={...connectionForm.value,waba_id:'',phone_number_id:'',access_token:''};success.value='WhatsApp Business number verified and connected.'}catch(err){error.value=err.message}finally{savingConnection.value=false} }
+async function checkHealth(connection){ health.value={...health.value,[connection.id]:{loading:true}};try{health.value={...health.value,[connection.id]:await api.whatsappHealth(connection.id)}}catch(err){health.value={...health.value,[connection.id]:{connected:false,error:err.message}}} }
+function formatTime(value){if(!value)return'';return new Intl.DateTimeFormat(undefined,{hour:'2-digit',minute:'2-digit'}).format(new Date(value))}
 onMounted(loadConversations)
 </script>
 
 <template>
-  <main class="shell" :class="{ 'settings-view': view === 'settings' }">
-    <aside class="sidebar">
-      <div class="brand"><div class="logo">WA</div><div><strong>WA Connect</strong><span>WhatsApp Core v0.1.0</span></div></div>
-      <nav class="nav">
-        <button :class="{ active: view === 'inbox' }" @click="view = 'inbox'">Inbox</button>
-        <button disabled>Contacts</button><button disabled>Flows</button><button disabled>Campaigns</button>
-        <button :class="{ active: view === 'settings' }" @click="openSettings">Settings</button>
-      </nav>
-    </aside>
-
-    <template v-if="view === 'inbox'">
-      <section class="conversation-list">
-        <header><div><p class="eyebrow">Live chat</p><h1>Inbox</h1></div><button class="refresh" @click="loadConversations">↻</button></header>
-        <div v-if="!conversations.length" class="empty-list">No conversations yet. Incoming WhatsApp messages will appear here.</div>
-        <button v-for="conversation in conversations" :key="conversation.id" class="conversation-row" :class="{ selected: selectedId === conversation.id }" @click="selectConversation(conversation.id)">
-          <span class="avatar">{{ (conversation.contact.name || conversation.contact.wa_id).slice(0, 1).toUpperCase() }}</span>
-          <span class="conversation-copy"><strong>{{ conversation.contact.name || conversation.contact.wa_id }}</strong><small>{{ conversation.contact.wa_id }}</small></span>
-          <span class="status">{{ conversation.status }}</span>
-        </button>
-      </section>
-
-      <section class="chat-panel">
-        <template v-if="selectedConversation">
-          <header class="chat-header"><div><strong>{{ selectedConversation.contact.name || selectedConversation.contact.wa_id }}</strong><span>{{ selectedConversation.contact.wa_id }}</span></div><span class="status-pill">{{ selectedConversation.status }}</span></header>
-          <div ref="messagePane" class="messages">
-            <div v-if="loading" class="center-state">Loading messages…</div>
-            <article v-for="message in messages" :key="message.id" class="bubble" :class="message.direction"><p>{{ message.body || `[${message.message_type}]` }}</p><footer><span>{{ formatTime(message.whatsapp_timestamp || message.created_at) }}</span><span>{{ message.status }}</span></footer></article>
-          </div>
-          <form class="composer" @submit.prevent="sendReply"><textarea v-model="reply" rows="1" placeholder="Type a WhatsApp reply…" /><button type="submit" :disabled="sending || !reply.trim()">{{ sending ? 'Sending…' : 'Send' }}</button></form>
-        </template>
-        <div v-else class="center-state">Select a conversation to start chatting.</div>
-        <div v-if="error" class="error-banner">{{ error }}</div>
-      </section>
-
-      <aside class="contact-panel"><template v-if="selectedConversation"><div class="large-avatar">{{ (selectedConversation.contact.name || selectedConversation.contact.wa_id).slice(0, 1).toUpperCase() }}</div><h2>{{ selectedConversation.contact.name || 'WhatsApp Contact' }}</h2><p>{{ selectedConversation.contact.wa_id }}</p><hr /><dl><div><dt>Status</dt><dd>{{ selectedConversation.status }}</dd></div><div><dt>Channel</dt><dd>WhatsApp</dd></div></dl></template></aside>
-    </template>
-
-    <section v-else class="settings-page">
-      <header class="settings-header"><div><p class="eyebrow">Configuration</p><h1>WhatsApp Business</h1><p>Connect a Meta WhatsApp Business Account and phone number to WA Connect.</p></div></header>
-      <div class="settings-grid">
-        <form class="settings-card" @submit.prevent="saveConnection">
-          <h2>Connect number</h2><p class="muted">Use the IDs and permanent access token from your Meta app / WhatsApp API setup.</p>
-          <div class="form-grid">
-            <label>Workspace name<input v-model="connectionForm.workspace_name" required /></label>
-            <label>Workspace slug<input v-model="connectionForm.workspace_slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /></label>
-            <label>WABA ID<input v-model="connectionForm.waba_id" required /></label>
-            <label>Account name<input v-model="connectionForm.account_name" placeholder="Optional" /></label>
-            <label>Phone number ID<input v-model="connectionForm.phone_number_id" required /></label>
-            <label>Display phone number<input v-model="connectionForm.display_phone_number" placeholder="e.g. +27 82 123 4567" /></label>
-            <label>Verified name<input v-model="connectionForm.verified_name" placeholder="Optional" /></label>
-            <label class="wide">Permanent access token<input v-model="connectionForm.access_token" type="password" required autocomplete="off" /></label>
-          </div>
-          <button class="primary" type="submit" :disabled="savingConnection">{{ savingConnection ? 'Connecting…' : 'Connect WhatsApp number' }}</button>
-          <p v-if="success" class="success-message">{{ success }}</p><p v-if="error" class="form-error">{{ error }}</p>
-        </form>
-
-        <div class="settings-card">
-          <h2>Connected numbers</h2>
-          <div v-if="!connections.length" class="empty-list">No WhatsApp numbers connected yet.</div>
-          <article v-for="connection in connections" :key="connection.id" class="connection-row">
-            <div><strong>{{ connection.verified_name || connection.account_name || connection.display_phone_number || connection.phone_number_id }}</strong><span>{{ connection.display_phone_number || 'Phone ID ' + connection.phone_number_id }}</span></div>
-            <div class="connection-meta"><span class="status-pill">{{ connection.active ? 'active' : 'inactive' }}</span><small>WABA {{ connection.waba_id }}</small><small>{{ connection.workspace_name }}</small></div>
-          </article>
-        </div>
-      </div>
-    </section>
-  </main>
+<main class="shell" :class="{'settings-view':view==='settings'}">
+<aside class="sidebar"><div class="brand"><div class="logo">WA</div><div><strong>WA Connect</strong><span>WhatsApp Core v0.1.0</span></div></div><nav class="nav"><button :class="{active:view==='inbox'}" @click="view='inbox'">Inbox</button><button disabled>Contacts</button><button disabled>Flows</button><button disabled>Campaigns</button><button :class="{active:view==='settings'}" @click="openSettings">Settings</button></nav></aside>
+<template v-if="view==='inbox'">
+<section class="conversation-list"><header><div><p class="eyebrow">Live chat</p><h1>Inbox</h1></div><button class="refresh" @click="loadConversations">↻</button></header><div v-if="!conversations.length" class="empty-list">No conversations yet. Incoming WhatsApp messages will appear here.</div><button v-for="c in conversations" :key="c.id" class="conversation-row" :class="{selected:selectedId===c.id}" @click="selectConversation(c.id)"><span class="avatar">{{(c.contact.name||c.contact.wa_id).slice(0,1).toUpperCase()}}</span><span class="conversation-copy"><strong>{{c.contact.name||c.contact.wa_id}}</strong><small>{{c.contact.wa_id}}</small></span><span class="status">{{c.status}}</span></button></section>
+<section class="chat-panel"><template v-if="selectedConversation"><header class="chat-header"><div><strong>{{selectedConversation.contact.name||selectedConversation.contact.wa_id}}</strong><span>{{selectedConversation.contact.wa_id}}</span></div><span class="status-pill">{{selectedConversation.status}}</span></header><div ref="messagePane" class="messages"><div v-if="loading" class="center-state">Loading messages…</div><article v-for="m in messages" :key="m.id" class="bubble" :class="m.direction"><p>{{m.body||`[${m.message_type}]`}}</p><footer><span>{{formatTime(m.whatsapp_timestamp||m.created_at)}}</span><span>{{m.status}}</span></footer></article></div><form class="composer" @submit.prevent="sendReply"><textarea v-model="reply" rows="1" placeholder="Type a WhatsApp reply…"/><button :disabled="sending||!reply.trim()">{{sending?'Sending…':'Send'}}</button></form></template><div v-else class="center-state">Select a conversation to start chatting.</div><div v-if="error" class="error-banner">{{error}}</div></section>
+<aside class="contact-panel"><template v-if="selectedConversation"><div class="large-avatar">{{(selectedConversation.contact.name||selectedConversation.contact.wa_id).slice(0,1).toUpperCase()}}</div><h2>{{selectedConversation.contact.name||'WhatsApp Contact'}}</h2><p>{{selectedConversation.contact.wa_id}}</p><hr/><dl><div><dt>Status</dt><dd>{{selectedConversation.status}}</dd></div><div><dt>Channel</dt><dd>WhatsApp</dd></div></dl></template></aside>
+</template>
+<section v-else class="settings-page"><header class="settings-header"><div><p class="eyebrow">Configuration</p><h1>WhatsApp Business</h1><p>Verify Meta credentials, connect a number and monitor its connection health.</p></div></header><div class="settings-grid">
+<form class="settings-card" @submit.prevent="saveConnection"><h2>Connect number</h2><p class="muted">WA Connect verifies these IDs against Meta before saving anything.</p><div class="form-grid"><label>Workspace name<input v-model="connectionForm.workspace_name" required/></label><label>Workspace slug<input v-model="connectionForm.workspace_slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*"/></label><label>WABA ID<input v-model="connectionForm.waba_id" required/></label><label>Phone number ID<input v-model="connectionForm.phone_number_id" required/></label><label class="wide">Permanent access token<input v-model="connectionForm.access_token" type="password" required autocomplete="off"/></label></div><div class="button-row"><button type="button" class="secondary" :disabled="testingConnection" @click="testConnection">{{testingConnection?'Testing…':'Test Meta connection'}}</button><button class="primary" :disabled="savingConnection">{{savingConnection?'Connecting…':'Verify & connect'}}</button></div><div v-if="preview" class="meta-preview"><strong>{{preview.verified_name||preview.account_name}}</strong><span>{{preview.display_phone_number}}</span><small>Quality: {{preview.quality_rating||'n/a'}} · Platform: {{preview.platform_type||'n/a'}} · Verification: {{preview.code_verification_status||'n/a'}}</small></div><p v-if="success" class="success-message">{{success}}</p><p v-if="error" class="form-error">{{error}}</p></form>
+<div class="settings-card"><h2>Meta webhook</h2><p class="muted">Configure this callback in your Meta app and subscribe the WhatsApp webhook fields.</p><dl v-if="webhook" class="setup-list"><div><dt>Callback path</dt><dd><code>{{webhook.callback_path}}</code></dd></div><div><dt>Verify token</dt><dd><code>{{webhook.verify_token}}</code></dd></div><div><dt>App secret</dt><dd>{{webhook.app_secret_configured?'Configured':'Not configured'}}</dd></div></dl><p class="muted">Use your public HTTPS host before the callback path. App Secret verification should be configured before production.</p></div>
+<div class="settings-card wide-card"><h2>Connected numbers</h2><div v-if="!connections.length" class="empty-list">No WhatsApp numbers connected yet.</div><article v-for="c in connections" :key="c.id" class="connection-row"><div><strong>{{c.verified_name||c.account_name||c.display_phone_number||c.phone_number_id}}</strong><span>{{c.display_phone_number||'Phone ID '+c.phone_number_id}}</span></div><div class="connection-meta"><span class="status-pill">{{c.active?'active':'inactive'}}</span><small>WABA {{c.waba_id}}</small><small>{{c.workspace_name}}</small></div><div class="health-actions"><button class="secondary" @click="checkHealth(c)">{{health[c.id]?.loading?'Checking…':'Check Meta'}}</button><small v-if="health[c.id]?.connected" class="health-ok">Connected · {{health[c.id].quality_rating||'quality n/a'}}</small><small v-else-if="health[c.id]?.error" class="health-bad">{{health[c.id].error}}</small></div></article></div>
+</div></section></main>
 </template>
