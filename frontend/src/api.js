@@ -5,25 +5,20 @@ async function request(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
-
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))
     throw new Error(payload.detail || `Request failed (${response.status})`)
   }
-
   return response.json()
 }
 
 export const api = {
   conversations: () => request('/conversations'),
   messages: (conversationId) => request(`/conversations/${conversationId}/messages`),
-  sendText: (conversationId, text) => request(`/conversations/${conversationId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({ text }),
-  }),
+  sendText: (conversationId, text) => request(`/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text }) }),
   whatsappConnections: () => request('/settings/whatsapp'),
-  connectWhatsApp: (payload) => request('/settings/whatsapp', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  }),
+  webhookSetup: () => request('/settings/whatsapp/webhook'),
+  verifyWhatsApp: (payload) => request('/settings/whatsapp/verify', { method: 'POST', body: JSON.stringify(payload) }),
+  whatsappHealth: (connectionId) => request(`/settings/whatsapp/${connectionId}/health`),
+  connectWhatsApp: (payload) => request('/settings/whatsapp', { method: 'POST', body: JSON.stringify(payload) }),
 }
