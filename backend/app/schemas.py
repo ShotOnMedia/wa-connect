@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import ConversationStatus, MessageDirection, MessageStatus
 
@@ -38,3 +38,37 @@ class MessageOut(BaseModel):
 
 class SendTextRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4096)
+
+
+class WhatsAppConnectionCreate(BaseModel):
+    workspace_name: str = Field(min_length=2, max_length=150)
+    workspace_slug: str = Field(min_length=2, max_length=150, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    waba_id: str = Field(min_length=2, max_length=64)
+    account_name: str = Field(default="", max_length=150)
+    phone_number_id: str = Field(min_length=2, max_length=64)
+    display_phone_number: str = Field(default="", max_length=40)
+    verified_name: str = Field(default="", max_length=150)
+    access_token: str = Field(min_length=10)
+
+    @field_validator("workspace_name", "waba_id", "phone_number_id", "access_token")
+    @classmethod
+    def strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
+class WhatsAppConnectionOut(BaseModel):
+    id: int
+    workspace_id: int
+    workspace_name: str
+    workspace_slug: str
+    whatsapp_account_id: int
+    waba_id: str
+    account_name: str | None
+    phone_number_id: str
+    display_phone_number: str | None
+    verified_name: str | None
+    active: bool
+    has_access_token: bool

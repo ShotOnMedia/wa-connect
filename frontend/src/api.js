@@ -21,4 +21,9 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ text }),
   }),
+  whatsappConnections: () => request('/settings/whatsapp'),
+  connectWhatsApp: (payload) => request('/settings/whatsapp', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
 }
