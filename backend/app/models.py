@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -31,6 +31,16 @@ class UserRole(str, Enum):
     ADMIN = "admin"
     MANAGER = "manager"
     AGENT = "agent"
+
+
+class ContactFieldType(str, Enum):
+    TEXT = "text"
+    TEXTAREA = "textarea"
+    EMAIL = "email"
+    NUMBER = "number"
+    DATE = "date"
+    SELECT = "select"
+    CHECKBOX = "checkbox"
 
 
 class User(Base):
@@ -105,6 +115,7 @@ class Contact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     tags: Mapped[list["ContactTag"]] = relationship(secondary="contact_tag_links", back_populates="contacts")
     notes: Mapped[list["ContactNote"]] = relationship(back_populates="contact", cascade="all, delete-orphan", order_by="ContactNote.created_at.desc()")
+    custom_values: Mapped[list["ContactFieldValue"]] = relationship(back_populates="contact", cascade="all, delete-orphan")
 
 
 class ContactTag(Base):
@@ -137,6 +148,42 @@ class ContactNote(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     contact: Mapped[Contact] = relationship(back_populates="notes")
     user: Mapped[User] = relationship()
+
+
+class ContactFieldDefinition(Base):
+    __tablename__ = "contact_field_definitions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "key", name="uq_workspace_contact_field_key"),
+        Index("ix_contact_fields_workspace_sort", "workspace_id", "sort_order"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(80))
+    label: Mapped[str] = mapped_column(String(120))
+    field_type: Mapped[ContactFieldType] = mapped_column(SqlEnum(ContactFieldType))
+    options_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    values: Mapped[list["ContactFieldValue"]] = relationship(back_populates="field", cascade="all, delete-orphan")
+
+
+class ContactFieldValue(Base):
+    __tablename__ = "contact_field_values"
+    __table_args__ = (
+        UniqueConstraint("contact_id", "field_id", name="uq_contact_field_value"),
+        Index("ix_contact_field_values_field_value", "field_id", "value_text"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    field_id: Mapped[int] = mapped_column(ForeignKey("contact_field_definitions.id", ondelete="CASCADE"), index=True)
+    value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    contact: Mapped[Contact] = relationship(back_populates="custom_values")
+    field: Mapped[ContactFieldDefinition] = relationship(back_populates="values")
 
 
 class Conversation(Base):
