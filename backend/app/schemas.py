@@ -12,6 +12,21 @@ class ContactOut(BaseModel):
     name: str | None
 
 
+class ContactListOut(ContactOut):
+    created_at: datetime
+    updated_at: datetime
+    conversation_count: int = 0
+    last_message_at: datetime | None = None
+
+
+class ContactDetailOut(ContactListOut):
+    message_count: int = 0
+
+
+class ContactUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+
+
 class AgentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
