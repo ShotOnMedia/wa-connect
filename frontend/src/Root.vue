@@ -60,8 +60,5 @@ onMounted(checkSession)
       </form>
     </section>
   </main>
-  <div v-else class="authenticated-app">
-    <div class="session-chip"><span>{{ user.name }} · {{ user.role }}</span><button @click="logout">Log out</button></div>
-    <App />
-  </div>
+  <App v-else :current-user="user" @logout="logout" />
 </template>
