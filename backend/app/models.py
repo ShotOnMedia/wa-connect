@@ -27,6 +27,41 @@ class MessageStatus(str, Enum):
     FAILED = "failed"
 
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    MANAGER = "manager"
+    AGENT = "agent"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), default=UserRole.AGENT)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
