@@ -6,13 +6,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.api.router import api_router
 from app.core.config import settings
-from app.core.database import Base, engine
+from app.core.database import Base, SessionLocal, engine
+from app.core.security import ensure_bootstrap_admin
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # v0.1.0 bootstrap. Replace with Alembic migrations before production release.
     Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        ensure_bootstrap_admin(db)
     yield
 
 
