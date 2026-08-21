@@ -32,15 +32,7 @@ def create_session(db: Session, user: User, response: Response) -> None:
     db.add(UserSession(user_id=user.id, token_hash=_token_hash(token), expires_at=expires_at))
     user.last_login_at = datetime.utcnow()
     db.commit()
-    response.set_cookie(
-        key=settings.auth_cookie_name,
-        value=token,
-        max_age=settings.auth_session_days * 86400,
-        httponly=True,
-        secure=settings.auth_cookie_secure,
-        samesite="lax",
-        path="/",
-    )
+    response.set_cookie(key=settings.auth_cookie_name, value=token, max_age=settings.auth_session_days * 86400, httponly=True, secure=settings.auth_cookie_secure, samesite="lax", path="/")
 
 
 def destroy_session(db: Session, response: Response, token: str | None) -> None:
@@ -50,17 +42,10 @@ def destroy_session(db: Session, response: Response, token: str | None) -> None:
     response.delete_cookie(settings.auth_cookie_name, path="/", secure=settings.auth_cookie_secure, samesite="lax")
 
 
-def require_user(
-    db: Session = Depends(get_db),
-    session_token: str | None = Cookie(default=None, alias=settings.auth_cookie_name),
-) -> User:
+def require_user(db: Session = Depends(get_db), session_token: str | None = Cookie(default=None, alias=settings.auth_cookie_name)) -> User:
     if not session_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    session = db.scalar(
-        select(UserSession)
-        .options(selectinload(UserSession.user))
-        .where(UserSession.token_hash == _token_hash(session_token))
-    )
+    session = db.scalar(select(UserSession).options(selectinload(UserSession.user)).where(UserSession.token_hash == _token_hash(session_token)))
     if not session or session.expires_at <= datetime.utcnow() or not session.user.active:
         if session:
             db.delete(session)
@@ -71,6 +56,18 @@ def require_user(
     return session.user
 
 
+def require_manager(user: User = Depends(require_user)) -> User:
+    if user.role not in {UserRole.ADMIN, UserRole.MANAGER}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    return user
+
+
+def require_admin(user: User = Depends(require_user)) -> User:
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required")
+    return user
+
+
 def ensure_bootstrap_admin(db: Session) -> None:
     if not settings.bootstrap_admin_email or not settings.bootstrap_admin_password:
         return
@@ -78,13 +75,5 @@ def ensure_bootstrap_admin(db: Session) -> None:
     user = db.scalar(select(User).where(User.email == email))
     if user:
         return
-    db.add(
-        User(
-            email=email,
-            name=settings.bootstrap_admin_name.strip() or "Administrator",
-            password_hash=hash_password(settings.bootstrap_admin_password),
-            role=UserRole.ADMIN,
-            active=True,
-        )
-    )
+    db.add(User(email=email, name=settings.bootstrap_admin_name.strip() or "Administrator", password_hash=hash_password(settings.bootstrap_admin_password), role=UserRole.ADMIN, active=True))
     db.commit()
