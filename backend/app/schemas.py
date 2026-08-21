@@ -12,15 +12,40 @@ class ContactOut(BaseModel):
     name: str | None
 
 
+class ContactTagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+
+
+class ContactTagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class ContactNoteCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=10000)
+
+
+class ContactNoteOut(BaseModel):
+    id: int
+    body: str
+    user_id: int
+    author_name: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ContactListOut(ContactOut):
     created_at: datetime
     updated_at: datetime
     conversation_count: int = 0
     last_message_at: datetime | None = None
+    tags: list[ContactTagOut] = []
 
 
 class ContactDetailOut(ContactListOut):
     message_count: int = 0
+    notes: list[ContactNoteOut] = []
 
 
 class ContactUpdate(BaseModel):
