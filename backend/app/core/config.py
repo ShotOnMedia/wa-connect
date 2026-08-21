@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_access_token: str = ""
 
+    auth_cookie_name: str = "wa_connect_session"
+    auth_session_days: int = 7
+    auth_cookie_secure: bool = True
+    bootstrap_admin_email: str = ""
+    bootstrap_admin_password: str = ""
+    bootstrap_admin_name: str = "Administrator"
+
     cors_origins: CorsOrigins = ["http://localhost:5173"]
 
 
