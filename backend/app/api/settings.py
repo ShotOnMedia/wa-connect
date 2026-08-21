@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models import WhatsAppAccount, WhatsAppPhoneNumber, Workspace
+from app.core.security import require_admin
+from app.models import User, WhatsAppAccount, WhatsAppPhoneNumber, Workspace
 from app.schemas import (
     WebhookSetupOut,
     WhatsAppConnectionCreate,
@@ -14,7 +15,7 @@ from app.schemas import (
 )
 from app.services.whatsapp import WhatsAppError, verify_whatsapp_connection
 
-router = APIRouter(prefix="/settings", tags=["Settings"])
+router = APIRouter(prefix="/settings", tags=["Settings"], dependencies=[Depends(require_admin)])
 
 
 def connection_out(phone: WhatsAppPhoneNumber) -> WhatsAppConnectionOut:
