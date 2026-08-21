@@ -1,7 +1,17 @@
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BeforeValidator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def parse_cors_origins(value):
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return value
+
+
+CorsOrigins = Annotated[list[str], NoDecode, BeforeValidator(parse_cors_origins)]
 
 
 class Settings(BaseSettings):
@@ -20,14 +30,7 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_access_token: str = ""
 
-    cors_origins: list[str] = ["http://localhost:5173"]
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value):
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
+    cors_origins: CorsOrigins = ["http://localhost:5173"]
 
 
 @lru_cache
