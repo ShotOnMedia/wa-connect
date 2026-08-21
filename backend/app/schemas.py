@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models import ConversationStatus, MessageDirection, MessageStatus, UserRole
+from app.models import ContactFieldType, ConversationStatus, MessageDirection, MessageStatus, UserRole
 
 
 class ContactOut(BaseModel):
@@ -35,6 +35,44 @@ class ContactNoteOut(BaseModel):
     updated_at: datetime
 
 
+class ContactFieldDefinitionCreate(BaseModel):
+    key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    label: str = Field(min_length=1, max_length=120)
+    field_type: ContactFieldType
+    options: list[str] = []
+    required: bool = False
+    active: bool = True
+    sort_order: int = 0
+
+
+class ContactFieldDefinitionUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    field_type: ContactFieldType | None = None
+    options: list[str] | None = None
+    required: bool | None = None
+    active: bool | None = None
+    sort_order: int | None = None
+
+
+class ContactFieldDefinitionOut(BaseModel):
+    id: int
+    key: str
+    label: str
+    field_type: ContactFieldType
+    options: list[str] = []
+    required: bool
+    active: bool
+    sort_order: int
+
+
+class ContactCustomFieldOut(ContactFieldDefinitionOut):
+    value: str | None = None
+
+
+class ContactFieldValueUpdate(BaseModel):
+    value: str | bool | int | float | None = None
+
+
 class ContactListOut(ContactOut):
     created_at: datetime
     updated_at: datetime
@@ -46,6 +84,7 @@ class ContactListOut(ContactOut):
 class ContactDetailOut(ContactListOut):
     message_count: int = 0
     notes: list[ContactNoteOut] = []
+    custom_fields: list[ContactCustomFieldOut] = []
 
 
 class ContactUpdate(BaseModel):
