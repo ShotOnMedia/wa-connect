@@ -26,9 +26,21 @@ export const api = {
   setConversationStatus: (conversationId, status) => request(`/conversations/${conversationId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   assignConversation: (conversationId, userId) => request(`/conversations/${conversationId}/assignment`, { method: 'PATCH', body: JSON.stringify({ user_id: userId }) }),
   sendText: (conversationId, text) => request(`/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text }) }),
-  contacts: (query = '') => request(`/contacts${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  contacts: (query = '', tagId = null) => {
+    const params = new URLSearchParams()
+    if (query) params.set('q', query)
+    if (tagId) params.set('tag_id', tagId)
+    const suffix = params.toString() ? `?${params}` : ''
+    return request(`/contacts${suffix}`)
+  },
   contact: (contactId) => request(`/contacts/${contactId}`),
   updateContact: (contactId, payload) => request(`/contacts/${contactId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  contactTags: () => request('/contacts/tags'),
+  createContactTag: (name) => request('/contacts/tags', { method: 'POST', body: JSON.stringify({ name }) }),
+  addContactTag: (contactId, tagId) => request(`/contacts/${contactId}/tags/${tagId}`, { method: 'POST' }),
+  removeContactTag: (contactId, tagId) => request(`/contacts/${contactId}/tags/${tagId}`, { method: 'DELETE' }),
+  addContactNote: (contactId, body) => request(`/contacts/${contactId}/notes`, { method: 'POST', body: JSON.stringify({ body }) }),
+  deleteContactNote: (contactId, noteId) => request(`/contacts/${contactId}/notes/${noteId}`, { method: 'DELETE' }),
   users: () => request('/users'),
   agents: () => request('/users/agents'),
   createUser: (payload) => request('/users', { method: 'POST', body: JSON.stringify(payload) }),
