@@ -35,7 +35,6 @@ class UserRole(str, Enum):
 
 class User(Base):
     __tablename__ = "users"
-
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(150))
@@ -45,20 +44,17 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
-
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
@@ -107,6 +103,40 @@ class Contact(Base):
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    tags: Mapped[list["ContactTag"]] = relationship(secondary="contact_tag_links", back_populates="contacts")
+    notes: Mapped[list["ContactNote"]] = relationship(back_populates="contact", cascade="all, delete-orphan", order_by="ContactNote.created_at.desc()")
+
+
+class ContactTag(Base):
+    __tablename__ = "contact_tags"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_workspace_contact_tag_name"), Index("ix_contact_tags_workspace_name", "workspace_id", "name"))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    contacts: Mapped[list[Contact]] = relationship(secondary="contact_tag_links", back_populates="tags")
+
+
+class ContactTagLink(Base):
+    __tablename__ = "contact_tag_links"
+    __table_args__ = (UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("contact_tags.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ContactNote(Base):
+    __tablename__ = "contact_notes"
+    __table_args__ = (Index("ix_contact_notes_contact_created", "contact_id", "created_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    contact: Mapped[Contact] = relationship(back_populates="notes")
+    user: Mapped[User] = relationship()
 
 
 class Conversation(Base):
