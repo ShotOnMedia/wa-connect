@@ -11,14 +11,23 @@ class WhatsAppError(RuntimeError):
 
 
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Validate Meta's X-Hub-Signature-256 against the exact raw request body.
+
+    Fail closed when META_APP_SECRET is missing. The public webhook endpoint must
+    never accept unsigned payloads merely because the application is running in
+    development mode.
+    """
     if not settings.meta_app_secret:
-        return settings.app_env == "development"
+        return False
     if not signature_header or not signature_header.startswith("sha256="):
         return False
 
     supplied = signature_header.removeprefix("sha256=")
-    expected = hmac.new(settings.meta_app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(supplied, expected)
+    if len(supplied) != 64:
+        return False
+
+    expected = hmac.new(settings.meta_app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(supplied.lower(), expected)
 
 
 async def _graph_get(path: str, access_token: str, params: dict | None = None) -> dict:
