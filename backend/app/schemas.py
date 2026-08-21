@@ -19,6 +19,13 @@ class ConversationOut(BaseModel):
     status: ConversationStatus
     last_message_at: datetime | None
     contact: ContactOut
+    unread_count: int = 0
+    last_message_body: str | None = None
+    last_message_direction: MessageDirection | None = None
+
+
+class ConversationStatusUpdate(BaseModel):
+    status: ConversationStatus
 
 
 class MessageOut(BaseModel):
