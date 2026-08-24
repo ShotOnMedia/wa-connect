@@ -29,6 +29,26 @@ class FlowStepType(str, Enum):
     DELAY = "delay"
 
 
+class FlowNodeType(str, Enum):
+    TRIGGER = "trigger"
+    SEND_MESSAGE = "send_message"
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+    FILE = "file"
+    QUESTION = "question"
+    INTERACTIVE = "interactive"
+    TEMPLATE = "template"
+    ADD_TAG = "add_tag"
+    REMOVE_TAG = "remove_tag"
+    SET_FIELD = "set_field"
+    ASSIGN_USER = "assign_user"
+    SET_STATUS = "set_status"
+    CONDITION = "condition"
+    DELAY = "delay"
+    HTTP_REQUEST = "http_request"
+
+
 class Flow(Base):
     __tablename__ = "flows"
     __table_args__ = (
@@ -53,6 +73,8 @@ class Flow(Base):
         cascade="all, delete-orphan",
         order_by="FlowStep.sort_order",
     )
+    nodes: Mapped[list["FlowNode"]] = relationship(back_populates="flow", cascade="all, delete-orphan")
+    edges: Mapped[list["FlowEdge"]] = relationship(back_populates="flow", cascade="all, delete-orphan")
 
 
 class FlowStep(Base):
@@ -71,3 +93,40 @@ class FlowStep(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     flow: Mapped[Flow] = relationship(back_populates="steps")
+
+
+class FlowNode(Base):
+    __tablename__ = "flow_nodes"
+    __table_args__ = (Index("ix_flow_nodes_flow_position", "flow_id", "position_x", "position_y"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    flow_id: Mapped[int] = mapped_column(ForeignKey("flows.id", ondelete="CASCADE"), index=True)
+    node_type: Mapped[FlowNodeType] = mapped_column(SqlEnum(FlowNodeType), index=True)
+    title: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    position_x: Mapped[int] = mapped_column(Integer, default=80)
+    position_y: Mapped[int] = mapped_column(Integer, default=80)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    flow: Mapped[Flow] = relationship(back_populates="nodes")
+
+
+class FlowEdge(Base):
+    __tablename__ = "flow_edges"
+    __table_args__ = (
+        UniqueConstraint("source_node_id", "source_handle", "target_node_id", "target_handle", name="uq_flow_edge_path"),
+        Index("ix_flow_edges_flow_source", "flow_id", "source_node_id"),
+        Index("ix_flow_edges_flow_target", "flow_id", "target_node_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    flow_id: Mapped[int] = mapped_column(ForeignKey("flows.id", ondelete="CASCADE"), index=True)
+    source_node_id: Mapped[int] = mapped_column(ForeignKey("flow_nodes.id", ondelete="CASCADE"), index=True)
+    source_handle: Mapped[str] = mapped_column(String(50), default="next")
+    target_node_id: Mapped[int] = mapped_column(ForeignKey("flow_nodes.id", ondelete="CASCADE"), index=True)
+    target_handle: Mapped[str] = mapped_column(String(50), default="input")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    flow: Mapped[Flow] = relationship(back_populates="edges")
