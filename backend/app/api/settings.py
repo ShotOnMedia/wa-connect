@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_admin
-from app.models import User, WhatsAppAccount, WhatsAppPhoneNumber, Workspace
+from app.models import WhatsAppAccount, WhatsAppPhoneNumber, Workspace
 from app.schemas import (
     WebhookSetupOut,
     WhatsAppConnectionCreate,
@@ -80,14 +80,36 @@ async def connection_health(connection_id: int, db: Session = Depends(get_db)):
 
 @router.post("/whatsapp", response_model=WhatsAppConnectionOut, status_code=201)
 async def create_whatsapp_connection(request: WhatsAppConnectionCreate, db: Session = Depends(get_db)):
-    existing_phone = db.scalar(select(WhatsAppPhoneNumber).where(WhatsAppPhoneNumber.phone_number_id == request.phone_number_id))
-    if existing_phone:
-        raise HTTPException(status_code=409, detail="This WhatsApp phone number ID is already connected")
+    waba_id = request.waba_id.strip()
+    phone_number_id = request.phone_number_id.strip()
+    access_token = request.access_token.strip()
 
     try:
-        meta = await verify_whatsapp_connection(request.waba_id.strip(), request.phone_number_id.strip(), request.access_token.strip())
+        meta = await verify_whatsapp_connection(waba_id, phone_number_id, access_token)
     except WhatsAppError as exc:
         raise HTTPException(status_code=502, detail=f"Meta verification failed: {exc}") from exc
+
+    # Credential rotation: if this phone number is already connected, a successful
+    # Meta verification means the supplied token is valid. Update the existing
+    # connection instead of rejecting it as a duplicate.
+    existing_phone = db.scalar(
+        select(WhatsAppPhoneNumber)
+        .options(selectinload(WhatsAppPhoneNumber.account).selectinload(WhatsAppAccount.workspace))
+        .where(WhatsAppPhoneNumber.phone_number_id == phone_number_id)
+    )
+    if existing_phone:
+        account = existing_phone.account
+        if account.waba_id != meta["waba_id"]:
+            raise HTTPException(status_code=409, detail="This phone number is connected to a different WhatsApp Business Account")
+
+        account.name = meta.get("account_name") or account.name
+        existing_phone.display_phone_number = meta.get("display_phone_number") or existing_phone.display_phone_number
+        existing_phone.verified_name = meta.get("verified_name") or existing_phone.verified_name
+        existing_phone.access_token = access_token
+        existing_phone.active = True
+        db.commit()
+        db.refresh(existing_phone)
+        return connection_out(existing_phone)
 
     workspace = db.scalar(select(Workspace).where(Workspace.slug == request.workspace_slug))
     if not workspace:
@@ -108,7 +130,7 @@ async def create_whatsapp_connection(request: WhatsAppConnectionCreate, db: Sess
         phone_number_id=meta["phone_number_id"],
         display_phone_number=meta.get("display_phone_number"),
         verified_name=meta.get("verified_name"),
-        access_token=request.access_token.strip(),
+        access_token=access_token,
     )
     db.add(phone)
     db.commit()
