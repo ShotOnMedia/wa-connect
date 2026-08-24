@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.security import require_user
 from app.models import Conversation, Message, MessageDirection, MessageStatus, User, UserRole, WhatsAppPhoneNumber
 from app.schemas import ConversationAssignmentUpdate, ConversationOut, ConversationStatusUpdate, MessageOut, SendTextRequest
+from app.services.service_window import ServiceWindowClosed, require_service_window, service_window_open
 from app.services.whatsapp import WhatsAppError, send_text_message
 
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -26,6 +27,9 @@ def _conversation_out(db: Session, conversation: Conversation) -> ConversationOu
         phone_number_id=conversation.phone_number_id,
         status=conversation.status,
         last_message_at=conversation.last_message_at,
+        last_customer_message_at=conversation.last_customer_message_at,
+        service_window_expires_at=conversation.service_window_expires_at,
+        service_window_open=service_window_open(conversation),
         contact=conversation.contact,
         unread_count=unread_count,
         last_message_body=last_message.body if last_message else None,
@@ -115,6 +119,12 @@ async def send_message(conversation_id: int, request: SendTextRequest, current: 
         raise HTTPException(status_code=404, detail="Conversation not found")
     if current.role == UserRole.AGENT and conversation.assigned_user_id not in {None, current.id}:
         raise HTTPException(status_code=403, detail="This conversation is assigned to another agent")
+    try:
+        require_service_window(conversation)
+    except ServiceWindowClosed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if conversation.contact.blocked_at:
+        raise HTTPException(status_code=409, detail="This contact is blocked and cannot receive free-form messages")
     if conversation.assigned_user_id is None:
         conversation.assigned_user_id = current.id
     phone_number = db.get(WhatsAppPhoneNumber, conversation.phone_number_id)
