@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -17,7 +18,10 @@ from app.models import (
     MessageStatus,
     User,
 )
+from app.services.service_window import service_window_open
 from app.services.whatsapp import WhatsAppError, send_text_message
+
+logger = logging.getLogger(__name__)
 
 
 def _config(step) -> dict:
@@ -64,6 +68,12 @@ async def _execute_step(db: Session, conversation: Conversation, step) -> None:
     if step.step_type == FlowStepType.SEND_MESSAGE:
         text = str(config.get("text") or "").strip()
         if not text:
+            return
+        if contact.blocked_at:
+            logger.warning("Flow send skipped: contact %s is blocked", contact.id)
+            return
+        if not service_window_open(conversation):
+            logger.warning("Flow send skipped: conversation %s is outside the 24-hour service window", conversation.id)
             return
         phone = conversation.phone_number
         if not phone.access_token:
@@ -144,12 +154,7 @@ async def _execute_step(db: Session, conversation: Conversation, step) -> None:
 
 
 async def run_flows_for_inbound(db: Session, conversation: Conversation, inbound_message: Message) -> int:
-    """Run active synchronous flows matched by one newly-created inbound message.
-
-    Delay steps are intentionally skipped until a durable queued flow-run model is added.
-    A failure rolls back only the current flow's uncommitted actions and is re-raised so
-    the webhook layer can log it without rejecting Meta's delivery.
-    """
+    """Run active synchronous flows matched by one newly-created inbound message."""
     matched = _matching_flows(db, conversation, inbound_message)
     executed = 0
     for flow in matched:
