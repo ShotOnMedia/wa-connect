@@ -32,7 +32,7 @@ class UserUpdate(BaseModel):
     name:str|None=Field(default=None,min_length=2,max_length=150); role:UserRole|None=None; active:bool|None=None; password:str|None=Field(default=None,min_length=8,max_length=512)
 class ConversationOut(BaseModel):
     model_config=ConfigDict(from_attributes=True)
-    id:int; phone_number_id:int; status:ConversationStatus; last_message_at:datetime|None; contact:ContactOut; unread_count:int=0; last_message_body:str|None=None; last_message_direction:MessageDirection|None=None; assigned_user_id:int|None=None; assigned_user:AgentOut|None=None
+    id:int; phone_number_id:int; status:ConversationStatus; last_message_at:datetime|None; last_customer_message_at:datetime|None=None; service_window_expires_at:datetime|None=None; service_window_open:bool=False; contact:ContactOut; unread_count:int=0; last_message_body:str|None=None; last_message_direction:MessageDirection|None=None; assigned_user_id:int|None=None; assigned_user:AgentOut|None=None
 class ConversationStatusUpdate(BaseModel): status:ConversationStatus
 class ConversationAssignmentUpdate(BaseModel): user_id:int|None=None
 class MessageOut(BaseModel):
