@@ -7,8 +7,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.security import require_user
-from app.flow_models import Flow, FlowStatus, FlowStep
-from app.flow_schemas import FlowCreate, FlowOut, FlowReorderRequest, FlowStepCreate, FlowStepOut, FlowStepUpdate, FlowUpdate
+from app.flow_models import Flow, FlowEdge, FlowNode, FlowStatus, FlowStep
+from app.flow_schemas import (
+    FlowCreate, FlowEdgeCreate, FlowEdgeOut, FlowGraphOut, FlowNodeCreate, FlowNodeOut,
+    FlowNodeUpdate, FlowOut, FlowReorderRequest, FlowStepCreate, FlowStepOut,
+    FlowStepUpdate, FlowUpdate,
+)
 from app.models import User, Workspace
 
 router = APIRouter(prefix="/flows", tags=["flows"])
@@ -26,17 +30,28 @@ def _workspace_id(db: Session) -> int:
     return int(workspace_id)
 
 
-def _step_out(step: FlowStep) -> FlowStepOut:
+def _json(value: str | None) -> dict:
     try:
-        config = json.loads(step.config_json or "{}")
+        return json.loads(value or "{}")
     except json.JSONDecodeError:
-        config = {}
-    return FlowStepOut(id=step.id, step_type=step.step_type, sort_order=step.sort_order, config=config, created_at=step.created_at, updated_at=step.updated_at)
+        return {}
+
+
+def _step_out(step: FlowStep) -> FlowStepOut:
+    return FlowStepOut(id=step.id, step_type=step.step_type, sort_order=step.sort_order, config=_json(step.config_json), created_at=step.created_at, updated_at=step.updated_at)
 
 
 def _flow_out(flow: Flow) -> FlowOut:
     steps = [_step_out(step) for step in sorted(flow.steps, key=lambda item: item.sort_order)]
     return FlowOut(id=flow.id, workspace_id=flow.workspace_id, name=flow.name, description=flow.description, status=flow.status, trigger_type=flow.trigger_type, trigger_value=flow.trigger_value, stop_on_reply=flow.stop_on_reply, step_count=len(steps), steps=steps, created_at=flow.created_at, updated_at=flow.updated_at)
+
+
+def _node_out(node: FlowNode) -> FlowNodeOut:
+    return FlowNodeOut(id=node.id, node_type=node.node_type, title=node.title, config=_json(node.config_json), position_x=node.position_x, position_y=node.position_y)
+
+
+def _edge_out(edge: FlowEdge) -> FlowEdgeOut:
+    return FlowEdgeOut(id=edge.id, source_node_id=edge.source_node_id, source_handle=edge.source_handle, target_node_id=edge.target_node_id, target_handle=edge.target_handle, sort_order=edge.sort_order)
 
 
 def _get_flow(flow_id: int, db: Session) -> Flow:
@@ -83,7 +98,8 @@ def update_flow(flow_id: int, payload: FlowUpdate, db: Session = Depends(get_db)
         flow.name = name
     if "description" in values: flow.description = values["description"].strip() if values["description"] else None
     if "status" in values:
-        if values["status"] == FlowStatus.ACTIVE and not flow.steps: raise HTTPException(status_code=400, detail="Add at least one step before activating a flow")
+        if values["status"] == FlowStatus.ACTIVE and not flow.steps and not db.scalar(select(FlowNode.id).where(FlowNode.flow_id == flow.id).limit(1)):
+            raise HTTPException(status_code=400, detail="Add at least one flow action before activating a flow")
         flow.status = values["status"]
     if "trigger_type" in values: flow.trigger_type = values["trigger_type"]
     if "trigger_value" in values: flow.trigger_value = values["trigger_value"].strip() if values["trigger_value"] else None
@@ -139,3 +155,65 @@ def delete_step(flow_id: int, step_id: int, db: Session = Depends(get_db), user:
     for index, item in enumerate(remaining): item.sort_order = index
     flow.updated_at = datetime.utcnow(); db.commit()
     return _flow_out(_get_flow(flow.id, db))
+
+
+@router.get("/{flow_id}/graph", response_model=FlowGraphOut)
+def get_graph(flow_id: int, db: Session = Depends(get_db)):
+    _get_flow(flow_id, db)
+    nodes = db.scalars(select(FlowNode).where(FlowNode.flow_id == flow_id).order_by(FlowNode.id)).all()
+    edges = db.scalars(select(FlowEdge).where(FlowEdge.flow_id == flow_id).order_by(FlowEdge.sort_order, FlowEdge.id)).all()
+    return FlowGraphOut(flow_id=flow_id, nodes=[_node_out(n) for n in nodes], edges=[_edge_out(e) for e in edges])
+
+
+@router.post("/{flow_id}/nodes", response_model=FlowNodeOut, status_code=status.HTTP_201_CREATED)
+def add_node(flow_id: int, payload: FlowNodeCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_manager(user); flow = _get_flow(flow_id, db)
+    node = FlowNode(flow_id=flow.id, node_type=payload.node_type, title=payload.title, config_json=json.dumps(payload.config, ensure_ascii=False), position_x=payload.position_x, position_y=payload.position_y)
+    db.add(node); flow.updated_at = datetime.utcnow(); db.commit(); db.refresh(node)
+    return _node_out(node)
+
+
+@router.patch("/{flow_id}/nodes/{node_id}", response_model=FlowNodeOut)
+def update_node(flow_id: int, node_id: int, payload: FlowNodeUpdate, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_manager(user); flow = _get_flow(flow_id, db)
+    node = db.scalar(select(FlowNode).where(FlowNode.id == node_id, FlowNode.flow_id == flow_id))
+    if not node: raise HTTPException(status_code=404, detail="Flow node not found")
+    values = payload.model_dump(exclude_unset=True)
+    if "title" in values: node.title = values["title"]
+    if "config" in values: node.config_json = json.dumps(values["config"] or {}, ensure_ascii=False)
+    if "position_x" in values: node.position_x = values["position_x"]
+    if "position_y" in values: node.position_y = values["position_y"]
+    flow.updated_at = datetime.utcnow(); db.commit(); db.refresh(node)
+    return _node_out(node)
+
+
+@router.delete("/{flow_id}/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_node(flow_id: int, node_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_manager(user); _get_flow(flow_id, db)
+    node = db.scalar(select(FlowNode).where(FlowNode.id == node_id, FlowNode.flow_id == flow_id))
+    if not node: raise HTTPException(status_code=404, detail="Flow node not found")
+    db.delete(node); db.commit()
+
+
+@router.post("/{flow_id}/edges", response_model=FlowEdgeOut, status_code=status.HTTP_201_CREATED)
+def add_edge(flow_id: int, payload: FlowEdgeCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_manager(user); _get_flow(flow_id, db)
+    node_ids = set(db.scalars(select(FlowNode.id).where(FlowNode.flow_id == flow_id, FlowNode.id.in_([payload.source_node_id, payload.target_node_id]))).all())
+    if node_ids != {payload.source_node_id, payload.target_node_id}:
+        raise HTTPException(status_code=400, detail="Both edge nodes must belong to this flow")
+    if payload.source_node_id == payload.target_node_id:
+        raise HTTPException(status_code=400, detail="A node cannot connect to itself")
+    edge = FlowEdge(flow_id=flow_id, source_node_id=payload.source_node_id, source_handle=payload.source_handle, target_node_id=payload.target_node_id, target_handle=payload.target_handle)
+    db.add(edge)
+    try: db.commit()
+    except Exception:
+        db.rollback(); raise HTTPException(status_code=409, detail="This connection already exists")
+    db.refresh(edge); return _edge_out(edge)
+
+
+@router.delete("/{flow_id}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_edge(flow_id: int, edge_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_manager(user); _get_flow(flow_id, db)
+    edge = db.scalar(select(FlowEdge).where(FlowEdge.id == edge_id, FlowEdge.flow_id == flow_id))
+    if not edge: raise HTTPException(status_code=404, detail="Flow edge not found")
+    db.delete(edge); db.commit()
