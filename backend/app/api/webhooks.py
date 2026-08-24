@@ -1,12 +1,18 @@
+import logging
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.models import Conversation
+from app.services.flow_runtime import run_flows_for_inbound
 from app.services.webhook import process_webhook_payload
 from app.services.whatsapp import verify_meta_signature
 
 router = APIRouter(prefix="/webhooks/meta", tags=["Meta webhooks"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/whatsapp")
@@ -31,5 +37,15 @@ async def receive_webhook(
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     payload = await request.json()
-    processed = process_webhook_payload(db, payload)
-    return {"ok": True, "processed": processed}
+    processed, inbound_messages = process_webhook_payload(db, payload)
+    flows_executed = 0
+
+    for inbound_message in inbound_messages:
+        try:
+            conversation = db.scalar(select(Conversation).where(Conversation.id == inbound_message.conversation_id))
+            if conversation:
+                flows_executed += await run_flows_for_inbound(db, conversation, inbound_message)
+        except Exception:
+            logger.exception("Flow execution failed for inbound message id=%s", inbound_message.id)
+
+    return {"ok": True, "processed": processed, "flows_executed": flows_executed}
