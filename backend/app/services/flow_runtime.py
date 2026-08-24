@@ -87,6 +87,19 @@ async def _execute_action(db: Session, conversation: Conversation, action_type: 
         return
 
 
+def _compare(actual: str, expected: str, operator: str) -> bool:
+    a=str(actual or "").strip(); e=str(expected or "").strip()
+    if operator in {"equals","open"}: return a.casefold()==e.casefold()
+    if operator in {"not_equals","closed"}: return a.casefold()!=e.casefold()
+    if operator=="contains": return e.casefold() in a.casefold()
+    if operator=="not_contains": return e.casefold() not in a.casefold()
+    if operator=="starts_with": return a.casefold().startswith(e.casefold())
+    if operator=="ends_with": return a.casefold().endswith(e.casefold())
+    if operator=="empty": return not a
+    if operator=="not_empty": return bool(a)
+    return False
+
+
 def _condition_result(db: Session, conversation: Conversation, config: dict) -> bool:
     field=str(config.get("field") or "service_window")
     operator=str(config.get("operator") or "open")
@@ -94,26 +107,33 @@ def _condition_result(db: Session, conversation: Conversation, config: dict) -> 
 
     if field == "service_window":
         opened=service_window_open(conversation)
-        return opened if operator in {"open","equals"} else not opened
-    if field == "conversation_status":
-        actual=conversation.status.value
-    elif field == "assigned_user":
-        actual="" if conversation.assigned_user_id is None else str(conversation.assigned_user_id)
-    elif field == "tag":
-        names=set(db.scalars(select(ContactTag.name).join(ContactTagLink,ContactTagLink.tag_id==ContactTag.id).where(ContactTagLink.contact_id==conversation.contact_id)).all())
-        actual=expected if expected in names else ""
-    elif field == "custom_field":
-        row=db.execute(select(ContactFieldValue.value_text).join(ContactFieldDefinition,ContactFieldDefinition.id==ContactFieldValue.field_id).where(ContactFieldValue.contact_id==conversation.contact_id,ContactFieldDefinition.key==expected)).first()
-        actual=(row[0] if row else "") or ""
-    else:
-        actual=""
+        if operator in {"open","equals"}: return opened
+        if operator in {"closed","not_equals"}: return not opened
+        return False
 
-    a=str(actual)
-    if operator in {"open","equals"}: return a.casefold()==expected.casefold()
-    if operator in {"closed","not_equals"}: return a.casefold()!=expected.casefold()
-    if operator=="contains": return expected.casefold() in a.casefold()
-    if operator=="empty": return not a.strip()
-    if operator=="not_empty": return bool(a.strip())
+    if field == "conversation_status":
+        return _compare(conversation.status.value, expected, operator)
+
+    if field == "assigned_user":
+        actual="" if conversation.assigned_user_id is None else str(conversation.assigned_user_id)
+        return _compare(actual, expected, operator)
+
+    if field == "tag":
+        names=set(db.scalars(select(ContactTag.name).join(ContactTagLink,ContactTagLink.tag_id==ContactTag.id).where(ContactTagLink.contact_id==conversation.contact_id)).all())
+        if operator=="empty": return not names
+        if operator=="not_empty": return bool(names)
+        matched=any(name.casefold()==expected.casefold() for name in names)
+        return not matched if operator in {"not_equals","not_contains"} else matched
+
+    if field == "custom_field":
+        # Accept field_key/key for new nodes. For compatibility with early V2 nodes,
+        # value may contain the key when no explicit key has been saved yet.
+        field_key=str(config.get("field_key") or config.get("key") or expected).strip()
+        compare_value=str(config.get("compare_value") if "compare_value" in config else ("" if field_key==expected else expected)).strip()
+        row=db.execute(select(ContactFieldValue.value_text).join(ContactFieldDefinition,ContactFieldDefinition.id==ContactFieldValue.field_id).where(ContactFieldValue.contact_id==conversation.contact_id,ContactFieldDefinition.key==field_key)).first()
+        actual=(row[0] if row else "") or ""
+        return _compare(actual, compare_value, operator)
+
     return False
 
 
@@ -132,10 +152,15 @@ async def _run_graph(db: Session, flow: Flow, conversation: Conversation) -> boo
         config=_json(current.config_json)
         handle="next"
         if current.node_type==FlowNodeType.CONDITION:
-            handle="yes" if _condition_result(db,conversation,config) else "no"
+            result=_condition_result(db,conversation,config)
+            handle="yes" if result else "no"
+            logger.info("Flow %s condition node %s evaluated %s -> %s",flow.id,current.id,result,handle)
         elif current.node_type!=FlowNodeType.TRIGGER:
             await _execute_action(db,conversation,current.node_type.value,config)
-        next_edge=next((e for e in outgoing.get(current.id,[]) if e.source_handle==handle),None)
+        candidates=[e for e in outgoing.get(current.id,[]) if e.source_handle==handle]
+        if len(candidates)>1:
+            logger.warning("Flow %s node %s handle %s has %s outgoing edges; using first",flow.id,current.id,handle,len(candidates))
+        next_edge=candidates[0] if candidates else None
         current=by_id.get(next_edge.target_node_id) if next_edge else None
     if visited>=100: raise RuntimeError("Flow graph exceeded 100 nodes; possible loop detected")
     return True
