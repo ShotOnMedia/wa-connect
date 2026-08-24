@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.flow_models import FlowStatus, FlowStepType, FlowTriggerType
+from app.flow_models import FlowNodeType, FlowStatus, FlowStepType, FlowTriggerType
 
 
 class FlowStepCreate(BaseModel):
@@ -67,3 +67,49 @@ class FlowOut(BaseModel):
 
 class FlowReorderRequest(BaseModel):
     step_ids: list[int] = Field(min_length=1)
+
+
+class FlowNodeCreate(BaseModel):
+    node_type: FlowNodeType
+    title: str | None = Field(default=None, max_length=150)
+    config: dict[str, Any] = Field(default_factory=dict)
+    position_x: int = 80
+    position_y: int = 80
+
+
+class FlowNodeUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=150)
+    config: dict[str, Any] | None = None
+    position_x: int | None = None
+    position_y: int | None = None
+
+
+class FlowNodeOut(BaseModel):
+    id: int
+    node_type: FlowNodeType
+    title: str | None
+    config: dict[str, Any]
+    position_x: int
+    position_y: int
+
+
+class FlowEdgeCreate(BaseModel):
+    source_node_id: int
+    source_handle: str = Field(default="next", min_length=1, max_length=50)
+    target_node_id: int
+    target_handle: str = Field(default="input", min_length=1, max_length=50)
+
+
+class FlowEdgeOut(BaseModel):
+    id: int
+    source_node_id: int
+    source_handle: str
+    target_node_id: int
+    target_handle: str
+    sort_order: int
+
+
+class FlowGraphOut(BaseModel):
+    flow_id: int
+    nodes: list[FlowNodeOut]
+    edges: list[FlowEdgeOut]
