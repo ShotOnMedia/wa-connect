@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Contact, Conversation, Message, MessageDirection, MessageStatus, WhatsAppPhoneNumber
+from app.services.service_window import open_service_window
 
 
 def _unix_datetime(value: str | int | None) -> datetime | None:
@@ -84,7 +85,9 @@ def process_webhook_payload(db: Session, payload: dict) -> tuple[int, list[Messa
                     db.flush()
 
                 timestamp = _unix_datetime(item.get("timestamp"))
-                conversation.last_message_at = timestamp or datetime.utcnow()
+                inbound_at = timestamp or datetime.utcnow()
+                conversation.last_message_at = inbound_at
+                open_service_window(conversation, inbound_at)
 
                 message = Message(
                     conversation_id=conversation.id,
