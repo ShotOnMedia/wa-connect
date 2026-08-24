@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from './api'
 import ContactFieldsPanel from './ContactFieldsPanel.vue'
+import FlowBuilder from './FlowBuilder.vue'
 
 const props = defineProps({ currentUser: { type: Object, required: true } })
 const emit = defineEmits(['logout'])
@@ -20,6 +21,7 @@ const canManageUsers = computed(() => props.currentUser.role === 'admin')
 const canManageSettings = computed(() => props.currentUser.role === 'admin')
 const canAssignOthers = computed(() => ['admin','manager'].includes(props.currentUser.role))
 const canManageContacts = computed(() => ['admin','manager'].includes(props.currentUser.role))
+const canManageFlows = computed(() => ['admin','manager'].includes(props.currentUser.role))
 const unusedTags = computed(() => {
   const selected = new Set((selectedContact.value?.tags || []).map(t => t.id))
   return contactTags.value.filter(t => !selected.has(t.id))
@@ -46,6 +48,7 @@ async function loadContacts({autoSelect=true}={}){
   }catch(err){error.value=err.message}finally{loadingContacts.value=false}
 }
 async function openContacts(){view.value='contacts';selectedId.value=null;error.value='';success.value='';try{contactTags.value=await api.contactTags();await loadContacts()}catch(err){error.value=err.message}}
+async function openFlows(){if(!canManageFlows.value)return;view.value='flows';selectedId.value=null;selectedContactId.value=null;selectedContact.value=null;error.value='';success.value=''}
 async function selectContact(id){selectedContactId.value=id;error.value='';success.value='';try{selectedContact.value=await api.contact(id);contactName.value=selectedContact.value.name||'';noteBody.value=''}catch(err){error.value=err.message}}
 function searchContacts(){window.clearTimeout(contactSearchTimer);contactSearchTimer=window.setTimeout(()=>loadContacts(),250)}
 async function changeContactLifecycleFilter(value){contactLifecycle.value=value;selectedContactId.value=null;selectedContact.value=null;await loadContacts()}
@@ -74,7 +77,7 @@ onBeforeUnmount(()=>{if(inboxTimer)window.clearInterval(inboxTimer);window.clear
 
 <template>
 <main class="shell" :class="{'wide-view':view!=='inbox'}">
-<aside class="sidebar"><div class="brand"><div class="logo">WA</div><div><strong>WA Connect</strong><span>WhatsApp Core v0.1.0</span></div></div><nav class="nav"><button :class="{active:view==='inbox'}" @click="openInbox">Inbox <b v-if="totalUnread" class="nav-badge">{{totalUnread}}</b></button><button :class="{active:view==='contacts'}" @click="openContacts">Contacts</button><button disabled>Flows</button><button disabled>Campaigns</button><button v-if="canManageUsers" :class="{active:view==='users'}" @click="openUsers">Users</button><button v-if="canManageSettings" :class="{active:view==='settings'}" @click="openSettings">Settings</button></nav><div class="sidebar-user"><span class="avatar">{{currentUser.name.slice(0,1).toUpperCase()}}</span><div><strong>{{currentUser.name}}</strong><small>{{currentUser.role}}</small></div><button title="Log out" @click="emit('logout')">↪</button></div></aside>
+<aside class="sidebar"><div class="brand"><div class="logo">WA</div><div><strong>WA Connect</strong><span>WhatsApp Core v0.1.0</span></div></div><nav class="nav"><button :class="{active:view==='inbox'}" @click="openInbox">Inbox <b v-if="totalUnread" class="nav-badge">{{totalUnread}}</b></button><button :class="{active:view==='contacts'}" @click="openContacts">Contacts</button><button v-if="canManageFlows" :class="{active:view==='flows'}" @click="openFlows">Flows</button><button disabled>Campaigns</button><button v-if="canManageUsers" :class="{active:view==='users'}" @click="openUsers">Users</button><button v-if="canManageSettings" :class="{active:view==='settings'}" @click="openSettings">Settings</button></nav><div class="sidebar-user"><span class="avatar">{{currentUser.name.slice(0,1).toUpperCase()}}</span><div><strong>{{currentUser.name}}</strong><small>{{currentUser.role}}</small></div><button title="Log out" @click="emit('logout')">↪</button></div></aside>
 
 <template v-if="view==='inbox'">
 <section class="conversation-list"><header><div><p class="eyebrow">Live chat</p><h1>Inbox <span v-if="totalUnread" class="title-badge">{{totalUnread}}</span></h1></div><button class="refresh" @click="loadConversations">↻</button></header><div class="assignment-filters"><button v-for="filter in ['all','mine','unassigned']" :key="filter" :class="{active:assignmentFilter===filter}" @click="changeAssignmentFilter(filter)">{{filter}}</button></div><div class="filters"><button v-for="filter in ['all','open','pending','resolved']" :key="filter" :class="{active:inboxFilter===filter}" @click="inboxFilter=filter">{{filter}}</button></div><div v-if="!filteredConversations.length" class="empty-list">No conversations in this view.</div><button v-for="c in filteredConversations" :key="c.id" class="conversation-row" :class="{selected:selectedId===c.id,unread:c.unread_count>0}" @click="selectConversation(c.id)"><span class="avatar">{{(c.contact.name||c.contact.wa_id).slice(0,1).toUpperCase()}}</span><span class="conversation-copy"><span class="row-top"><strong>{{c.contact.name||c.contact.wa_id}}</strong><time>{{formatListTime(c.last_message_at)}}</time></span><span class="row-bottom"><small>{{c.last_message_direction==='outbound'?'You: ':''}}{{c.last_message_body||c.contact.wa_id}}</small><b v-if="c.unread_count" class="unread-badge">{{c.unread_count}}</b></span><span class="assignee-line">{{c.assigned_user ? c.assigned_user.name : 'Unassigned'}}</span></span></button></section>
@@ -97,6 +100,8 @@ onBeforeUnmount(()=>{if(inboxTimer)window.clearInterval(inboxTimer);window.clear
 </div>
 <dl class="contact-meta"><div><dt>WhatsApp ID</dt><dd>{{selectedContact.wa_id}}</dd></div><div><dt>Lifecycle</dt><dd>{{selectedContact.blocked_at?'Blocked':selectedContact.archived_at?'Archived':'Active'}}</dd></div><div><dt>First seen</dt><dd>{{formatDate(selectedContact.created_at)}}</dd></div><div><dt>Last updated</dt><dd>{{formatDate(selectedContact.updated_at)}}</dd></div></dl><p v-if="success" class="success-message">{{success}}</p><p v-if="error" class="form-error">{{error}}</p></template><div v-else class="center-state">Select a contact to view their profile.</div></section>
 </div></section>
+
+<FlowBuilder v-else-if="view==='flows' && canManageFlows" :current-user="currentUser" />
 
 <section v-else-if="view==='users'" class="settings-page"><header class="settings-header"><div><p class="eyebrow">Team</p><h1>Users</h1><p>Create agents and managers, control access and reset passwords.</p></div></header><div class="settings-grid"><form class="settings-card" @submit.prevent="createUser"><h2>Add user</h2><div class="form-grid"><label>Name<input v-model="userForm.name" required/></label><label>Email<input v-model="userForm.email" type="email" required/></label><label>Role<select v-model="userForm.role"><option value="agent">Agent</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label><label>Password<input v-model="userForm.password" type="password" minlength="8" required autocomplete="new-password"/></label></div><button class="primary" :disabled="savingUser">{{savingUser?'Creating…':'Create user'}}</button><p v-if="success" class="success-message">{{success}}</p><p v-if="error" class="form-error">{{error}}</p></form><div class="settings-card wide-card"><h2>Team members</h2><article v-for="member in users" :key="member.id" class="user-row"><span class="avatar">{{member.name.slice(0,1).toUpperCase()}}</span><div class="user-copy"><strong>{{member.name}}</strong><span>{{member.email}}</span></div><select :value="member.role" :disabled="member.id===currentUser.id" @change="updateUser(member,{role:$event.target.value})"><option value="agent">Agent</option><option value="manager">Manager</option><option value="admin">Admin</option></select><button class="secondary" :disabled="member.id===currentUser.id" @click="updateUser(member,{active:!member.active})">{{member.active?'Deactivate':'Activate'}}</button><span class="status-pill" :class="{inactive:!member.active}">{{member.active?'active':'inactive'}}</span></article></div></div></section>
 
