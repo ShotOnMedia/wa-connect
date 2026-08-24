@@ -76,12 +76,26 @@ class FlowNodeCreate(BaseModel):
     position_x: int = 80
     position_y: int = 80
 
+    @field_validator("position_x", "position_y", mode="before")
+    @classmethod
+    def normalize_position(cls, value: Any) -> int:
+        if value is None:
+            return 80
+        return int(round(float(value)))
+
 
 class FlowNodeUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=150)
     config: dict[str, Any] | None = None
     position_x: int | None = None
     position_y: int | None = None
+
+    @field_validator("position_x", "position_y", mode="before")
+    @classmethod
+    def normalize_optional_position(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        return int(round(float(value)))
 
 
 class FlowNodeOut(BaseModel):
