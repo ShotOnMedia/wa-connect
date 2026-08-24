@@ -1,7 +1,7 @@
 <script setup>
 import { nextTick, ref } from 'vue'
 import FlowsLibrary from './FlowsLibrary.vue'
-import VisualFlowBuilder from './VisualFlowBuilder.vue'
+import VisualFlowBuilder from './VisualFlowBuilderV2.vue'
 
 const props=defineProps({currentUser:{type:Object,required:true}})
 const editing=ref(false), builderHost=ref(null)
