@@ -24,8 +24,9 @@ def _extract_body(message: dict) -> str | None:
     return None
 
 
-def process_webhook_payload(db: Session, payload: dict) -> int:
+def process_webhook_payload(db: Session, payload: dict) -> tuple[int, list[Message]]:
     processed = 0
+    inbound_messages: list[Message] = []
 
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -85,18 +86,19 @@ def process_webhook_payload(db: Session, payload: dict) -> int:
                 timestamp = _unix_datetime(item.get("timestamp"))
                 conversation.last_message_at = timestamp or datetime.utcnow()
 
-                db.add(
-                    Message(
-                        conversation_id=conversation.id,
-                        meta_message_id=meta_message_id,
-                        direction=MessageDirection.INBOUND,
-                        message_type=item.get("type", "unknown"),
-                        body=_extract_body(item),
-                        payload_json=json.dumps(item, ensure_ascii=False),
-                        status=MessageStatus.RECEIVED,
-                        whatsapp_timestamp=timestamp,
-                    )
+                message = Message(
+                    conversation_id=conversation.id,
+                    meta_message_id=meta_message_id,
+                    direction=MessageDirection.INBOUND,
+                    message_type=item.get("type", "unknown"),
+                    body=_extract_body(item),
+                    payload_json=json.dumps(item, ensure_ascii=False),
+                    status=MessageStatus.RECEIVED,
+                    whatsapp_timestamp=timestamp,
                 )
+                db.add(message)
+                db.flush()
+                inbound_messages.append(message)
                 processed += 1
 
             statuses = value.get("statuses", [])
@@ -114,4 +116,4 @@ def process_webhook_payload(db: Session, payload: dict) -> int:
                     pass
 
     db.commit()
-    return processed
+    return processed, inbound_messages
