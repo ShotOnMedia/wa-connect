@@ -1,5 +1,24 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'
-async function request(path,options={}){const response=await fetch(`${API_BASE}${path}`,{credentials:'include',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});if(!response.ok){const payload=await response.json().catch(()=>({}));const error=new Error(payload.detail||`Request failed (${response.status})`);error.status=response.status;throw error}if(response.status===204)return null;return response.json()}
+
+function formatApiError(detail, fallback) {
+  if (!detail) return fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail.map(item => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') {
+        const location = Array.isArray(item.loc) ? item.loc.filter(part => part !== 'body').join('.') : ''
+        const message = item.msg || item.message || JSON.stringify(item)
+        return location ? `${location}: ${message}` : message
+      }
+      return String(item)
+    }).join('; ')
+  }
+  if (typeof detail === 'object') return detail.message || detail.msg || JSON.stringify(detail)
+  return String(detail)
+}
+
+async function request(path,options={}){const response=await fetch(`${API_BASE}${path}`,{credentials:'include',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});if(!response.ok){const payload=await response.json().catch(()=>({}));const error=new Error(formatApiError(payload.detail,`Request failed (${response.status})`));error.status=response.status;error.payload=payload;throw error}if(response.status===204)return null;return response.json()}
 export const api={
 me:()=>request('/auth/me'),login:(email,password)=>request('/auth/login',{method:'POST',body:JSON.stringify({email,password})}),logout:()=>request('/auth/logout',{method:'POST'}),
 conversations:(assignment='all')=>request(`/conversations?assignment=${encodeURIComponent(assignment)}`),messages:id=>request(`/conversations/${id}/messages`),markRead:id=>request(`/conversations/${id}/read`,{method:'POST'}),setConversationStatus:(id,status)=>request(`/conversations/${id}/status`,{method:'PATCH',body:JSON.stringify({status})}),assignConversation:(id,userId)=>request(`/conversations/${id}/assignment`,{method:'PATCH',body:JSON.stringify({user_id:userId})}),sendText:(id,text)=>request(`/conversations/${id}/messages`,{method:'POST',body:JSON.stringify({text})}),
