@@ -38,6 +38,7 @@ class FlowNodeType(str, Enum):
     FILE = "file"
     QUESTION = "question"
     INTERACTIVE = "interactive"
+    BUTTON = "button"
     TEMPLATE = "template"
     ADD_TAG = "add_tag"
     REMOVE_TAG = "remove_tag"
