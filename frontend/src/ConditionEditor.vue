@@ -1,0 +1,88 @@
+<script setup>
+import { computed } from 'vue'
+
+const props=defineProps({draft:{type:Object,required:true},tags:{type:Array,default:()=>[]},fields:{type:Array,default:()=>[]},agents:{type:Array,default:()=>[]}})
+
+const operators=computed(()=>{
+  switch(props.draft.condition_field){
+    case 'service_window': return [['open','Open'],['closed','Closed']]
+    case 'assigned_user': return [['equals','Is'],['not_equals','Is not'],['empty','Unassigned'],['not_empty','Assigned']]
+    case 'tag': return [['equals','Has tag'],['not_equals','Does not have tag'],['empty','Has no tags'],['not_empty','Has any tag']]
+    case 'conversation_status': return [['equals','Is'],['not_equals','Is not']]
+    case 'custom_field': return [['equals','Equals'],['not_equals','Does not equal'],['contains','Contains'],['not_contains','Does not contain'],['starts_with','Starts with'],['ends_with','Ends with'],['empty','Is empty'],['not_empty','Is not empty']]
+    default: return [['equals','Equals'],['not_equals','Not equals']]
+  }
+})
+const needsValue=computed(()=>!['service_window'].includes(props.draft.condition_field)&&!['empty','not_empty'].includes(props.draft.operator))
+const needsCustomValue=computed(()=>props.draft.condition_field==='custom_field'&&!['empty','not_empty'].includes(props.draft.operator))
+function changed(){
+  if(props.draft.condition_field==='service_window'){props.draft.operator='open';props.draft.value=''}
+  else if(props.draft.condition_field==='assigned_user'){props.draft.operator='equals';props.draft.value=''}
+  else if(props.draft.condition_field==='tag'){props.draft.operator='equals';props.draft.value=''}
+  else if(props.draft.condition_field==='conversation_status'){props.draft.operator='equals';props.draft.value='open'}
+  else if(props.draft.condition_field==='custom_field'){props.draft.operator='equals';props.draft.custom_field_key='';props.draft.compare_value='';props.draft.value=''}
+}
+function operatorChanged(){
+  if(['empty','not_empty'].includes(props.draft.operator))props.draft.value=''
+}
+</script>
+
+<template>
+  <div class="condition-editor">
+    <label>Check
+      <select v-model="draft.condition_field" @change="changed">
+        <option value="service_window">24-hour service window</option>
+        <option value="tag">Contact tag</option>
+        <option value="custom_field">Custom field</option>
+        <option value="conversation_status">Conversation status</option>
+        <option value="assigned_user">Assigned agent</option>
+      </select>
+    </label>
+
+    <label v-if="draft.condition_field==='custom_field'">Custom field
+      <select v-model="draft.custom_field_key">
+        <option value="">Select a field…</option>
+        <option v-for="field in fields" :key="field.id" :value="field.key">{{field.label || field.name || field.key}}</option>
+      </select>
+    </label>
+
+    <label>Operator
+      <select v-model="draft.operator" @change="operatorChanged">
+        <option v-for="([value,label]) in operators" :key="value" :value="value">{{label}}</option>
+      </select>
+    </label>
+
+    <label v-if="draft.condition_field==='assigned_user' && needsValue">Agent
+      <select v-model="draft.value">
+        <option value="">Select an agent…</option>
+        <option v-for="agent in agents" :key="agent.id" :value="String(agent.id)">{{agent.name || agent.email}}</option>
+      </select>
+    </label>
+
+    <label v-else-if="draft.condition_field==='tag' && needsValue">Tag
+      <select v-model="draft.value">
+        <option value="">Select a tag…</option>
+        <option v-for="tag in tags" :key="tag.id" :value="tag.name">{{tag.name}}</option>
+      </select>
+    </label>
+
+    <label v-else-if="draft.condition_field==='conversation_status'">Status
+      <select v-model="draft.value">
+        <option value="open">Open</option>
+        <option value="pending">Pending</option>
+        <option value="resolved">Resolved</option>
+      </select>
+    </label>
+
+    <label v-else-if="needsCustomValue">Value
+      <input v-model="draft.compare_value" placeholder="Value to compare against">
+    </label>
+
+    <p v-if="draft.condition_field==='service_window'" class="condition-help">True follows the branch when the WhatsApp 24-hour customer service window is {{draft.operator==='open'?'open':'closed'}}.</p>
+    <p v-else-if="['empty','not_empty'].includes(draft.operator)" class="condition-help">This operator does not need a comparison value.</p>
+  </div>
+</template>
+
+<style scoped>
+.condition-help{margin:-3px 0 14px;padding:10px 12px;border-radius:8px;background:#f1f8f4;color:#587066;font-size:12px;line-height:1.45}
+</style>
