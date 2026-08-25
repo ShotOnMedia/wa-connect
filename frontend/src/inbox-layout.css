@@ -1,0 +1,55 @@
+/* Keep the live-chat inbox inside the browser viewport.
+   The conversation list and message history scroll independently instead of
+   growing the entire application page as conversations get longer. */
+
+.shell:not(.wide-view) {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell:not(.wide-view) > .sidebar,
+.shell:not(.wide-view) > .conversation-list,
+.shell:not(.wide-view) > .chat-panel,
+.shell:not(.wide-view) > .contact-panel {
+  height: 100vh;
+  min-height: 0;
+}
+
+.shell:not(.wide-view) > .sidebar {
+  min-height: 0;
+}
+
+.shell:not(.wide-view) > .conversation-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.shell:not(.wide-view) > .chat-panel {
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
+  grid-template-rows: 82px minmax(0, 1fr) auto;
+}
+
+.shell:not(.wide-view) > .chat-panel > .messages {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.shell:not(.wide-view) > .chat-panel > .composer {
+  position: relative;
+  z-index: 2;
+}
+
+.shell:not(.wide-view) > .contact-panel {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Keep errors above the fixed-bottom composer area without affecting layout. */
+.shell:not(.wide-view) > .chat-panel > .error-banner {
+  z-index: 3;
+}
