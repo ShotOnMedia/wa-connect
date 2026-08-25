@@ -61,6 +61,37 @@ def _finish_session(session: FlowSession, status: FlowSessionStatus = FlowSessio
     session.ended_at = datetime.utcnow()
 
 
+def _set_contact_field_value(db: Session, conversation: Conversation, field_id: int, value) -> bool:
+    field = db.scalar(select(ContactFieldDefinition).where(ContactFieldDefinition.id == int(field_id), ContactFieldDefinition.workspace_id == conversation.workspace_id, ContactFieldDefinition.active.is_(True)))
+    if not field:
+        logger.warning("Custom field %s not found/active in workspace %s", field_id, conversation.workspace_id)
+        return False
+    text = None if value is None else str(value).strip()
+    existing = db.scalar(select(ContactFieldValue).where(ContactFieldValue.contact_id == conversation.contact_id, ContactFieldValue.field_id == field.id))
+    if existing:
+        existing.value_text = text
+        existing.updated_at = datetime.utcnow()
+    else:
+        db.add(ContactFieldValue(contact_id=conversation.contact_id, field_id=field.id, value_text=text))
+    db.flush()
+    return True
+
+
+def _capture_reply(db: Session, conversation: Conversation, waiting_node: FlowNode, inbound_message: Message) -> None:
+    config = _json(waiting_node.config_json)
+    field_id = config.get("capture_field_id") or config.get("save_reply_field_id") or config.get("field_id")
+    if not field_id:
+        return
+    if waiting_node.node_type != FlowNodeType.QUESTION:
+        return
+    if inbound_message.message_type not in (None, "text"):
+        logger.info("Question node %s received non-text reply type=%s; capture skipped", waiting_node.id, inbound_message.message_type)
+        return
+    value = inbound_message.body or ""
+    if _set_contact_field_value(db, conversation, int(field_id), value):
+        logger.info("Flow question node %s captured reply into custom field %s", waiting_node.id, field_id)
+
+
 async def _execute_action(db: Session, conversation: Conversation, action_type: str, config: dict) -> None:
     contact = conversation.contact
     if action_type in {"send_message", "question", "interactive"}:
@@ -91,13 +122,7 @@ async def _execute_action(db: Session, conversation: Conversation, action_type: 
     if action_type == "set_field":
         field_id=config.get("field_id")
         if not field_id:return
-        field=db.scalar(select(ContactFieldDefinition).where(ContactFieldDefinition.id==int(field_id),ContactFieldDefinition.workspace_id==conversation.workspace_id))
-        if not field:return
-        value=config.get("value")
-        existing=db.scalar(select(ContactFieldValue).where(ContactFieldValue.contact_id==contact.id,ContactFieldValue.field_id==field.id))
-        if existing: existing.value_text=None if value is None else str(value); existing.updated_at=datetime.utcnow()
-        else: db.add(ContactFieldValue(contact_id=contact.id,field_id=field.id,value_text=None if value is None else str(value)))
-        db.flush();return
+        _set_contact_field_value(db, conversation, int(field_id), config.get("value"));return
 
     if action_type == "assign_user":
         user_id=config.get("user_id")
@@ -185,7 +210,9 @@ async def _run_graph(db: Session, flow: Flow, conversation: Conversation, sessio
         elif current.node_type!=FlowNodeType.TRIGGER:
             await _execute_action(db,conversation,current.node_type.value,config)
             if current.node_type in {FlowNodeType.QUESTION,FlowNodeType.INTERACTIVE}:
-                session.status=FlowSessionStatus.WAITING;session.waiting_for="reply";db.flush()
+                session.status=FlowSessionStatus.WAITING
+                session.waiting_for="reply"
+                db.flush()
                 logger.info("Flow %s session %s waiting for reply at node %s",flow.id,session.id,current.id)
                 return True
         current=_next_node(by_id,outgoing,current.id,handle)
@@ -202,6 +229,7 @@ async def _resume_waiting_session(db: Session, conversation: Conversation, inbou
     waiting_node=by_id.get(session.current_node_id)
     if not waiting_node:
         _finish_session(session,FlowSessionStatus.FAILED);return False
+    _capture_reply(db, conversation, waiting_node, inbound_message)
     session.last_inbound_message_id=inbound_message.id;session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None
     next_node=_next_node(by_id,outgoing,waiting_node.id,"next")
     if not next_node:
