@@ -7,12 +7,33 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_user
+from app.flow_models import Flow, FlowNode, FlowSession, FlowSessionStatus
 from app.models import Conversation, Message, MessageDirection, MessageStatus, User, UserRole, WhatsAppPhoneNumber
-from app.schemas import ConversationAssignmentUpdate, ConversationOut, ConversationStatusUpdate, MessageOut, SendTextRequest
+from app.schemas import ConversationAssignmentUpdate, ConversationOut, ConversationStatusUpdate, FlowSessionOut, MessageOut, SendTextRequest
 from app.services.service_window import ServiceWindowClosed, require_service_window, service_window_open
 from app.services.whatsapp import WhatsAppError, send_text_message
 
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
+
+
+def _flow_session_out(db: Session, conversation_id: int) -> FlowSessionOut | None:
+    session = db.scalar(select(FlowSession).where(FlowSession.conversation_id == conversation_id))
+    if not session:
+        return None
+    flow = db.get(Flow, session.flow_id)
+    node = db.get(FlowNode, session.current_node_id) if session.current_node_id else None
+    return FlowSessionOut(
+        id=session.id,
+        flow_id=session.flow_id,
+        flow_name=flow.name if flow else f"Flow {session.flow_id}",
+        current_node_id=session.current_node_id,
+        current_node_title=(node.title if node else None),
+        status=session.status.value,
+        waiting_for=session.waiting_for,
+        started_at=session.started_at,
+        updated_at=session.updated_at,
+        ended_at=session.ended_at,
+    )
 
 
 def _conversation_out(db: Session, conversation: Conversation) -> ConversationOut:
@@ -36,6 +57,7 @@ def _conversation_out(db: Session, conversation: Conversation) -> ConversationOu
         last_message_direction=last_message.direction if last_message else None,
         assigned_user_id=conversation.assigned_user_id,
         assigned_user=assigned_user,
+        flow_session=_flow_session_out(db, conversation.id),
     )
 
 
@@ -60,6 +82,32 @@ def list_messages(conversation_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Conversation not found")
     stmt = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
     return list(db.scalars(stmt).all())
+
+
+@router.get("/{conversation_id}/flow-session", response_model=FlowSessionOut | None)
+def get_flow_session(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return _flow_session_out(db, conversation_id)
+
+
+@router.post("/{conversation_id}/flow-session/reset", response_model=FlowSessionOut | None)
+def reset_flow_session(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    session = db.scalar(select(FlowSession).where(FlowSession.conversation_id == conversation_id))
+    if not session:
+        return None
+    session.status = FlowSessionStatus.RESET
+    session.current_node_id = None
+    session.waiting_for = None
+    session.ended_at = datetime.utcnow()
+    session.reset_by_user_id = current.id
+    db.commit()
+    db.refresh(session)
+    return _flow_session_out(db, conversation_id)
 
 
 @router.post("/{conversation_id}/read", response_model=ConversationOut)
