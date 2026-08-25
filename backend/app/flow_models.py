@@ -50,6 +50,14 @@ class FlowNodeType(str, Enum):
     HTTP_REQUEST = "http_request"
 
 
+class FlowSessionStatus(str, Enum):
+    ACTIVE = "active"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    RESET = "reset"
+    FAILED = "failed"
+
+
 class Flow(Base):
     __tablename__ = "flows"
     __table_args__ = (
@@ -69,11 +77,7 @@ class Flow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    steps: Mapped[list["FlowStep"]] = relationship(
-        back_populates="flow",
-        cascade="all, delete-orphan",
-        order_by="FlowStep.sort_order",
-    )
+    steps: Mapped[list["FlowStep"]] = relationship(back_populates="flow", cascade="all, delete-orphan", order_by="FlowStep.sort_order")
     nodes: Mapped[list["FlowNode"]] = relationship(back_populates="flow", cascade="all, delete-orphan")
     edges: Mapped[list["FlowEdge"]] = relationship(back_populates="flow", cascade="all, delete-orphan")
 
@@ -131,3 +135,24 @@ class FlowEdge(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     flow: Mapped[Flow] = relationship(back_populates="edges")
+
+
+class FlowSession(Base):
+    __tablename__ = "flow_sessions"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", name="uq_flow_session_conversation"),
+        Index("ix_flow_sessions_status_updated", "status", "updated_at"),
+        Index("ix_flow_sessions_flow_status", "flow_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    flow_id: Mapped[int] = mapped_column(ForeignKey("flows.id", ondelete="CASCADE"), index=True)
+    current_node_id: Mapped[int | None] = mapped_column(ForeignKey("flow_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[FlowSessionStatus] = mapped_column(SqlEnum(FlowSessionStatus), default=FlowSessionStatus.ACTIVE, index=True)
+    waiting_for: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_inbound_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reset_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
