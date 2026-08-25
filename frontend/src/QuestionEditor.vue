@@ -1,0 +1,49 @@
+<script setup>
+import { computed } from 'vue'
+
+const props=defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]}})
+const textTypes=new Set(['text','email','phone','date','number','integer','decimal'])
+const lengthTypes=new Set(['text','email','phone'])
+const numberTypes=new Set(['number','integer','decimal'])
+const isText=computed(()=>textTypes.has(props.draft.reply_type))
+const hasLength=computed(()=>lengthTypes.has(props.draft.reply_type))
+const isNumber=computed(()=>numberTypes.has(props.draft.reply_type))
+const isDate=computed(()=>props.draft.reply_type==='date')
+const isMedia=computed(()=>['image','audio','video','document','sticker','media'].includes(props.draft.reply_type))
+</script>
+
+<template>
+  <section class="question-editor">
+    <div class="section-title"><b>Reply & validation</b><small>Control what the contact may send before the flow continues.</small></div>
+
+    <label>Expected reply type
+      <select v-model="draft.reply_type">
+        <optgroup label="Text & data">
+          <option value="text">Text</option><option value="email">Email address</option><option value="phone">Phone number</option><option value="date">Date</option><option value="number">Number</option><option value="integer">Whole number</option>
+        </optgroup>
+        <optgroup label="Media">
+          <option value="image">Photo / image</option><option value="audio">Audio / voice note</option><option value="video">Video</option><option value="document">Document / file</option><option value="sticker">Sticker</option><option value="media">Any media</option>
+        </optgroup>
+      </select>
+      <small class="help" v-if="isMedia">The flow remains waiting until the contact sends this media type.</small>
+    </label>
+
+    <label class="check"><input v-model="draft.required" type="checkbox"><span><b>Reply required</b><small>Do not continue until a valid reply is received.</small></span></label>
+
+    <label>Save valid reply to
+      <select v-model="draft.capture_field_id"><option value="">Do not save reply</option><option v-for="field in fields" :key="field.id" :value="field.id">{{field.label||field.name||field.key}}</option></select>
+      <small class="help">Media fields store stable WhatsApp media metadata, including the Meta media ID.</small>
+    </label>
+
+    <div v-if="hasLength" class="two"><label>Minimum length<input v-model="draft.min_length" type="number" min="0" placeholder="None"></label><label>Maximum length<input v-model="draft.max_length" type="number" min="1" placeholder="None"></label></div>
+    <div v-if="isNumber" class="two"><label>Minimum value<input v-model="draft.min_value" type="number" placeholder="None"></label><label>Maximum value<input v-model="draft.max_value" type="number" placeholder="None"></label></div>
+    <label v-if="isDate">Date format<input v-model="draft.date_format" placeholder="%Y-%m-%d"><small class="help">Default is YYYY-MM-DD.</small></label>
+    <label v-if="isText">Validation pattern <span class="optional">optional</span><input v-model="draft.pattern" placeholder="Regular expression"><small class="help">Advanced: require the entire text reply to match a regular expression.</small></label>
+
+    <label>Invalid reply message<textarea v-model="draft.validation_error" rows="3" placeholder="Leave blank to use the automatic message"></textarea><small class="help">Sent when the reply has the wrong type or fails validation. The flow stays on this Question block.</small></label>
+  </section>
+</template>
+
+<style scoped>
+.question-editor{margin-top:20px;padding-top:18px;border-top:1px solid #e5ece9}.section-title{margin-bottom:15px}.section-title b,.section-title small{display:block}.section-title small,.help{margin-top:4px;color:#7c8b85;font-weight:400;line-height:1.4}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.check{flex-direction:row!important;align-items:flex-start;gap:10px!important;padding:11px 12px;border:1px solid #e0e8e4;border-radius:8px}.check input{width:auto!important;margin-top:2px}.check span,.check b,.check small{display:block}.check small{margin-top:3px;color:#7c8b85;font-weight:400}.optional{font-weight:400;color:#8b9a94}.question-editor label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;margin-bottom:14px}.question-editor input,.question-editor textarea,.question-editor select{border:1px solid #d7e1dd;border-radius:8px;padding:10px;font:inherit;background:#fff}
+</style>
