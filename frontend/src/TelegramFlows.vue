@@ -1,6 +1,10 @@
 <script setup>
+import { onBeforeUnmount,onMounted } from 'vue'
+import { api } from './api'
 import FlowBuilder from './FlowBuilder.vue'
 const props=defineProps({currentUser:{type:Object,required:true}})
+onMounted(()=>api.setFlowChannel('telegram'))
+onBeforeUnmount(()=>api.setFlowChannel('whatsapp'))
 </script>
 
 <template>
@@ -9,9 +13,9 @@ const props=defineProps({currentUser:{type:Object,required:true}})
       <span class="telegram-icon">T</span>
       <div>
         <strong>Telegram automation workspace</strong>
-        <small>Flows use the shared WA Connect visual builder. Channel-specific Telegram execution is being layered onto the same automation engine.</small>
+        <small>Flows use the shared WA Connect visual builder and are now stored separately from WhatsApp flows.</small>
       </div>
-      <span class="shared-pill">Shared Flow Engine</span>
+      <span class="shared-pill">Telegram runtime active</span>
     </div>
     <FlowBuilder :current-user="currentUser" channel="telegram" />
   </section>
