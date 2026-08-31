@@ -15,6 +15,7 @@ from app.flow_schemas import (
     FlowStepUpdate, FlowUpdate,
 )
 from app.models import User, Workspace
+from app.telegram_models import TelegramBot
 
 router = APIRouter(prefix="/flows", tags=["flows"])
 
@@ -24,7 +25,18 @@ def _require_manager(user: User) -> None:
         raise HTTPException(status_code=403, detail="Only admins and managers can manage flows")
 
 
-def _workspace_id(db: Session) -> int:
+def _workspace_id(db: Session, channel: str = "whatsapp") -> int:
+    if channel == "telegram":
+        workspace_id = db.scalar(
+            select(TelegramBot.workspace_id)
+            .where(TelegramBot.active.is_(True))
+            .order_by(TelegramBot.id.asc())
+            .limit(1)
+        )
+        if workspace_id is not None:
+            return int(workspace_id)
+        raise HTTPException(status_code=400, detail="Connect a Telegram bot before creating Telegram flows")
+
     workspace_id = db.scalar(select(Workspace.id).where(Workspace.active.is_(True)).order_by(Workspace.id.asc()).limit(1))
     if workspace_id is None:
         raise HTTPException(status_code=400, detail="Connect a workspace before creating flows")
@@ -85,7 +97,7 @@ def list_flows(
 @router.post("", response_model=FlowOut, status_code=status.HTTP_201_CREATED)
 def create_flow(payload: FlowCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
     _require_manager(user)
-    workspace_id = _workspace_id(db)
+    workspace_id = _workspace_id(db, payload.channel)
     duplicate = db.scalar(select(Flow.id).where(Flow.workspace_id == workspace_id, func.lower(Flow.name) == payload.name.lower()))
     if duplicate:
         raise HTTPException(status_code=409, detail="A flow with this name already exists")
@@ -168,68 +180,56 @@ def delete_step(flow_id: int, step_id: int, db: Session = Depends(get_db), user:
     if not step: raise HTTPException(status_code=404, detail="Flow step not found")
     db.delete(step); db.flush()
     remaining = db.scalars(select(FlowStep).where(FlowStep.flow_id == flow.id).order_by(FlowStep.sort_order.asc())).all()
-    for index, item in enumerate(remaining): item.sort_order = index
-    flow.updated_at = datetime.utcnow(); db.commit()
-    return _flow_out(_get_flow(flow.id, db))
+    for index, item in enumerate(remaining): item.sort_order=index
+    flow.updated_at=datetime.utcnow(); db.commit(); return _flow_out(_get_flow(flow.id, db))
 
 
 @router.get("/{flow_id}/graph", response_model=FlowGraphOut)
-def get_graph(flow_id: int, db: Session = Depends(get_db)):
-    _get_flow(flow_id, db)
-    nodes = db.scalars(select(FlowNode).where(FlowNode.flow_id == flow_id).order_by(FlowNode.id)).all()
-    edges = db.scalars(select(FlowEdge).where(FlowEdge.flow_id == flow_id).order_by(FlowEdge.sort_order, FlowEdge.id)).all()
-    return FlowGraphOut(flow_id=flow_id, nodes=[_node_out(n) for n in nodes], edges=[_edge_out(e) for e in edges])
+def get_graph(flow_id:int, db:Session=Depends(get_db)):
+    _get_flow(flow_id,db)
+    nodes=db.scalars(select(FlowNode).where(FlowNode.flow_id==flow_id).order_by(FlowNode.id)).all()
+    edges=db.scalars(select(FlowEdge).where(FlowEdge.flow_id==flow_id).order_by(FlowEdge.sort_order,FlowEdge.id)).all()
+    return FlowGraphOut(nodes=[_node_out(n) for n in nodes],edges=[_edge_out(e) for e in edges])
 
 
 @router.post("/{flow_id}/nodes", response_model=FlowNodeOut, status_code=status.HTTP_201_CREATED)
-def add_node(flow_id: int, payload: FlowNodeCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_manager(user); flow = _get_flow(flow_id, db)
-    node = FlowNode(flow_id=flow.id, node_type=payload.node_type, title=payload.title, config_json=json.dumps(payload.config, ensure_ascii=False), position_x=payload.position_x, position_y=payload.position_y)
-    db.add(node); flow.updated_at = datetime.utcnow(); db.commit(); db.refresh(node)
-    return _node_out(node)
+def add_node(flow_id:int,payload:FlowNodeCreate,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_manager(user); flow=_get_flow(flow_id,db)
+    node=FlowNode(flow_id=flow.id,node_type=payload.node_type,title=payload.title,config_json=json.dumps(payload.config or {},ensure_ascii=False),position_x=payload.position_x,position_y=payload.position_y)
+    db.add(node); flow.updated_at=datetime.utcnow(); db.commit(); db.refresh(node); return _node_out(node)
 
 
 @router.patch("/{flow_id}/nodes/{node_id}", response_model=FlowNodeOut)
-def update_node(flow_id: int, node_id: int, payload: FlowNodeUpdate, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_manager(user); flow = _get_flow(flow_id, db)
-    node = db.scalar(select(FlowNode).where(FlowNode.id == node_id, FlowNode.flow_id == flow_id))
-    if not node: raise HTTPException(status_code=404, detail="Flow node not found")
-    values = payload.model_dump(exclude_unset=True)
-    if "title" in values: node.title = values["title"]
-    if "config" in values: node.config_json = json.dumps(values["config"] or {}, ensure_ascii=False)
-    if "position_x" in values: node.position_x = values["position_x"]
-    if "position_y" in values: node.position_y = values["position_y"]
-    flow.updated_at = datetime.utcnow(); db.commit(); db.refresh(node)
-    return _node_out(node)
+def update_node(flow_id:int,node_id:int,payload:FlowNodeUpdate,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_manager(user); flow=_get_flow(flow_id,db); node=db.scalar(select(FlowNode).where(FlowNode.id==node_id,FlowNode.flow_id==flow_id))
+    if not node: raise HTTPException(status_code=404,detail="Flow node not found")
+    values=payload.model_dump(exclude_unset=True)
+    if "title" in values: node.title=values["title"]
+    if "config" in values: node.config_json=json.dumps(values["config"] or {},ensure_ascii=False)
+    if "position_x" in values: node.position_x=values["position_x"]
+    if "position_y" in values: node.position_y=values["position_y"]
+    flow.updated_at=datetime.utcnow(); db.commit(); db.refresh(node); return _node_out(node)
 
 
 @router.delete("/{flow_id}/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_node(flow_id: int, node_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_manager(user); _get_flow(flow_id, db)
-    node = db.scalar(select(FlowNode).where(FlowNode.id == node_id, FlowNode.flow_id == flow_id))
-    if not node: raise HTTPException(status_code=404, detail="Flow node not found")
-    db.delete(node); db.commit()
+def delete_node(flow_id:int,node_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_manager(user); flow=_get_flow(flow_id,db); node=db.scalar(select(FlowNode).where(FlowNode.id==node_id,FlowNode.flow_id==flow_id))
+    if not node: raise HTTPException(status_code=404,detail="Flow node not found")
+    db.delete(node); flow.updated_at=datetime.utcnow(); db.commit()
 
 
 @router.post("/{flow_id}/edges", response_model=FlowEdgeOut, status_code=status.HTTP_201_CREATED)
-def add_edge(flow_id: int, payload: FlowEdgeCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_manager(user); _get_flow(flow_id, db)
-    node_ids = set(db.scalars(select(FlowNode.id).where(FlowNode.flow_id == flow_id, FlowNode.id.in_([payload.source_node_id, payload.target_node_id]))).all())
-    if node_ids != {payload.source_node_id, payload.target_node_id}:
-        raise HTTPException(status_code=400, detail="Both edge nodes must belong to this flow")
-    if payload.source_node_id == payload.target_node_id:
-        raise HTTPException(status_code=400, detail="A node cannot connect to itself")
-    edge = FlowEdge(flow_id=flow_id, source_node_id=payload.source_node_id, source_handle=payload.source_handle, target_node_id=payload.target_node_id, target_handle=payload.target_handle)
-    db.add(edge)
-    try: db.commit()
-    except Exception:
-        db.rollback(); raise HTTPException(status_code=409, detail="This connection already exists")
-    db.refresh(edge); return _edge_out(edge)
+def add_edge(flow_id:int,payload:FlowEdgeCreate,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_manager(user); flow=_get_flow(flow_id,db)
+    if payload.source_node_id==payload.target_node_id: raise HTTPException(status_code=400,detail="A node cannot connect to itself")
+    source=db.scalar(select(FlowNode.id).where(FlowNode.id==payload.source_node_id,FlowNode.flow_id==flow_id)); target=db.scalar(select(FlowNode.id).where(FlowNode.id==payload.target_node_id,FlowNode.flow_id==flow_id))
+    if not source or not target: raise HTTPException(status_code=400,detail="Both nodes must belong to this flow")
+    edge=FlowEdge(flow_id=flow.id,source_node_id=payload.source_node_id,source_handle=payload.source_handle,target_node_id=payload.target_node_id,target_handle=payload.target_handle,sort_order=payload.sort_order)
+    db.add(edge); flow.updated_at=datetime.utcnow(); db.commit(); db.refresh(edge); return _edge_out(edge)
 
 
 @router.delete("/{flow_id}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_edge(flow_id: int, edge_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_manager(user); _get_flow(flow_id, db)
-    edge = db.scalar(select(FlowEdge).where(FlowEdge.id == edge_id, FlowEdge.flow_id == flow_id))
-    if not edge: raise HTTPException(status_code=404, detail="Flow edge not found")
-    db.delete(edge); db.commit()
+def delete_edge(flow_id:int,edge_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_manager(user); flow=_get_flow(flow_id,db); edge=db.scalar(select(FlowEdge).where(FlowEdge.id==edge_id,FlowEdge.flow_id==flow_id))
+    if not edge: raise HTTPException(status_code=404,detail="Flow edge not found")
+    db.delete(edge); flow.updated_at=datetime.utcnow(); db.commit()
