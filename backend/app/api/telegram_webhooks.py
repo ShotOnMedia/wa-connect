@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.services.telegram_flow_runtime import run_telegram_flows_for_inbound
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
 router = APIRouter(prefix="/webhooks/telegram", tags=["Telegram webhooks"])
@@ -64,17 +65,9 @@ async def receive_telegram_webhook(
     if sender_id is None or chat_id is None or telegram_message_id is None:
         return {"ok": True, "processed": 0, "ignored": True}
 
-    contact = db.scalar(
-        select(TelegramContact).where(
-            TelegramContact.workspace_id == bot.workspace_id,
-            TelegramContact.telegram_user_id == int(sender_id),
-        )
-    )
+    contact = db.scalar(select(TelegramContact).where(TelegramContact.workspace_id == bot.workspace_id, TelegramContact.telegram_user_id == int(sender_id)))
     if not contact:
-        contact = TelegramContact(
-            workspace_id=bot.workspace_id,
-            telegram_user_id=int(sender_id),
-        )
+        contact = TelegramContact(workspace_id=bot.workspace_id, telegram_user_id=int(sender_id))
         db.add(contact)
         db.flush()
 
@@ -83,51 +76,34 @@ async def receive_telegram_webhook(
     contact.last_name = sender.get("last_name")
     contact.language_code = sender.get("language_code")
 
-    conversation = db.scalar(
-        select(TelegramConversation).where(
-            TelegramConversation.telegram_bot_id == bot.id,
-            TelegramConversation.chat_id == int(chat_id),
-        )
-    )
+    conversation = db.scalar(select(TelegramConversation).where(TelegramConversation.telegram_bot_id == bot.id, TelegramConversation.chat_id == int(chat_id)))
     if not conversation:
-        conversation = TelegramConversation(
-            workspace_id=bot.workspace_id,
-            telegram_bot_id=bot.id,
-            contact_id=contact.id,
-            chat_id=int(chat_id),
-            chat_type=chat.get("type") or "private",
-            status="open",
-        )
+        conversation = TelegramConversation(workspace_id=bot.workspace_id, telegram_bot_id=bot.id, contact_id=contact.id, chat_id=int(chat_id), chat_type=chat.get("type") or "private", status="open")
         db.add(conversation)
         db.flush()
     else:
         conversation.contact_id = contact.id
 
-    existing = db.scalar(
-        select(TelegramMessage).where(
-            TelegramMessage.conversation_id == conversation.id,
-            TelegramMessage.telegram_message_id == int(telegram_message_id),
-        )
-    )
+    existing = db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id == conversation.id, TelegramMessage.telegram_message_id == int(telegram_message_id)))
     if existing:
         db.commit()
         return {"ok": True, "processed": 0, "duplicate": True}
 
     message_type, body = detect_message_type(message)
     timestamp = datetime.utcfromtimestamp(message["date"]) if message.get("date") else datetime.utcnow()
-    inbound = TelegramMessage(
-        conversation_id=conversation.id,
-        telegram_message_id=int(telegram_message_id),
-        direction="inbound",
-        message_type=message_type,
-        body=body,
-        payload_json=json.dumps(payload, ensure_ascii=False),
-        status="received",
-        telegram_timestamp=timestamp,
-    )
+    inbound = TelegramMessage(conversation_id=conversation.id, telegram_message_id=int(telegram_message_id), direction="inbound", message_type=message_type, body=body, payload_json=json.dumps(payload, ensure_ascii=False), status="received", telegram_timestamp=timestamp)
     db.add(inbound)
     conversation.last_message_at = timestamp
     db.commit()
+    db.refresh(inbound)
 
-    logger.info("Telegram inbound stored bot=%s chat=%s message=%s", bot.bot_id, chat_id, telegram_message_id)
-    return {"ok": True, "processed": 1, "conversation_id": conversation.id, "message_id": inbound.id}
+    flows_executed = 0
+    try:
+        flows_executed = await run_telegram_flows_for_inbound(db, conversation, inbound)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Telegram flow processing failed conversation=%s message=%s", conversation.id, inbound.id)
+
+    logger.info("Telegram inbound stored bot=%s chat=%s message=%s flows=%s", bot.bot_id, chat_id, telegram_message_id, flows_executed)
+    return {"ok": True, "processed": 1, "conversation_id": conversation.id, "message_id": inbound.id, "flows_executed": flows_executed}
