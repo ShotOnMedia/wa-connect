@@ -189,7 +189,7 @@ def get_graph(flow_id:int, db:Session=Depends(get_db)):
     _get_flow(flow_id,db)
     nodes=db.scalars(select(FlowNode).where(FlowNode.flow_id==flow_id).order_by(FlowNode.id)).all()
     edges=db.scalars(select(FlowEdge).where(FlowEdge.flow_id==flow_id).order_by(FlowEdge.sort_order,FlowEdge.id)).all()
-    return FlowGraphOut(nodes=[_node_out(n) for n in nodes],edges=[_edge_out(e) for e in edges])
+    return FlowGraphOut(flow_id=flow_id,nodes=[_node_out(n) for n in nodes],edges=[_edge_out(e) for e in edges])
 
 
 @router.post("/{flow_id}/nodes", response_model=FlowNodeOut, status_code=status.HTTP_201_CREATED)
