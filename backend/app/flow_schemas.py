@@ -31,6 +31,7 @@ class FlowCreate(BaseModel):
     trigger_type: FlowTriggerType = FlowTriggerType.MANUAL
     trigger_value: str | None = Field(default=None, max_length=255)
     stop_on_reply: bool = False
+    channel: str = Field(default="whatsapp", pattern="^(whatsapp|telegram)$")
 
     @field_validator("name")
     @classmethod
