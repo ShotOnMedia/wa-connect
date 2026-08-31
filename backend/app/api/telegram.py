@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
@@ -31,7 +31,7 @@ class TelegramStatsOut(BaseModel): bots:int; contacts:int; conversations:int; me
 class TelegramSendIn(BaseModel): text:str=Field(min_length=1,max_length=4096)
 
 def bot_out(bot,workspace): return TelegramBotOut(id=bot.id,workspace_id=workspace.id,workspace_name=workspace.name,workspace_slug=workspace.slug,bot_id=bot.bot_id,username=bot.username,first_name=bot.first_name,active=bot.active,webhook_url=bot.webhook_url,has_token=bool(bot.access_token),created_at=bot.created_at)
-def contact_out(c): return {"id":c.id,"telegram_user_id":c.telegram_user_id,"username":c.username,"first_name":c.first_name,"last_name":c.last_name,"name":" ".join(filter(None,[c.first_name,c.last_name])) or c.username or str(c.telegram_user_id),"language_code":c.language_code}
+def contact_out(c): return {"id":c.id,"telegram_user_id":c.telegram_user_id,"username":c.username,"first_name":c.first_name,"last_name":c.last_name,"name":" ".join(filter(None,[c.first_name,c.last_name])) or c.username or str(c.telegram_user_id),"language_code":c.language_code,"is_bot":c.is_bot,"created_at":c.created_at,"updated_at":c.updated_at}
 def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
 def conversation_out(c):
     last=c.messages[-1] if c.messages else None
@@ -71,6 +71,23 @@ async def bot_health(bot_db_id:int,db:Session=Depends(get_db)):
 @router.get("/stats",response_model=TelegramStatsOut,dependencies=[Depends(require_user)])
 def telegram_stats(db:Session=Depends(get_db)):
     bots=db.scalar(select(func.count()).select_from(TelegramBot).where(TelegramBot.active.is_(True))) or 0;contacts=db.scalar(select(func.count()).select_from(TelegramContact)) or 0;conversations=db.scalar(select(func.count()).select_from(TelegramConversation)) or 0;messages=db.scalar(select(func.count()).select_from(TelegramMessage)) or 0;unread=db.scalar(select(func.count()).select_from(TelegramConversation).where(TelegramConversation.last_message_at.is_not(None),(TelegramConversation.last_read_at.is_(None))|(TelegramConversation.last_read_at<TelegramConversation.last_message_at))) or 0;return TelegramStatsOut(bots=bots,contacts=contacts,conversations=conversations,messages=messages,unread=unread)
+
+@router.get("/contacts",dependencies=[Depends(require_user)])
+def telegram_contacts(q:str|None=None,db:Session=Depends(get_db)):
+    stmt=select(TelegramContact).order_by(TelegramContact.updated_at.desc())
+    if q:
+        term=f"%{q.strip()}%";stmt=stmt.where(or_(TelegramContact.first_name.ilike(term),TelegramContact.last_name.ilike(term),TelegramContact.username.ilike(term)))
+    contacts=db.scalars(stmt).all();result=[]
+    for c in contacts:
+        convs=db.scalars(select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id==c.id).order_by(TelegramConversation.last_message_at.desc())).all()
+        result.append({**contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]})
+    return result
+@router.get("/contacts/{contact_id}",dependencies=[Depends(require_user)])
+def telegram_contact(contact_id:int,db:Session=Depends(get_db)):
+    c=db.scalar(select(TelegramContact).where(TelegramContact.id==contact_id))
+    if not c:raise HTTPException(status_code=404,detail="Telegram contact not found")
+    convs=db.scalars(select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id==c.id).order_by(TelegramConversation.last_message_at.desc())).all()
+    return {**contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]}
 
 @router.get("/conversations",dependencies=[Depends(require_user)])
 def telegram_conversations(db:Session=Depends(get_db)):
