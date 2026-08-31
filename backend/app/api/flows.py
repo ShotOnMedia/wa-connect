@@ -224,7 +224,8 @@ def add_edge(flow_id:int,payload:FlowEdgeCreate,db:Session=Depends(get_db),user:
     if payload.source_node_id==payload.target_node_id: raise HTTPException(status_code=400,detail="A node cannot connect to itself")
     source=db.scalar(select(FlowNode.id).where(FlowNode.id==payload.source_node_id,FlowNode.flow_id==flow_id)); target=db.scalar(select(FlowNode.id).where(FlowNode.id==payload.target_node_id,FlowNode.flow_id==flow_id))
     if not source or not target: raise HTTPException(status_code=400,detail="Both nodes must belong to this flow")
-    edge=FlowEdge(flow_id=flow.id,source_node_id=payload.source_node_id,source_handle=payload.source_handle,target_node_id=payload.target_node_id,target_handle=payload.target_handle,sort_order=payload.sort_order)
+    next_sort_order = db.scalar(select(func.coalesce(func.max(FlowEdge.sort_order), -1)).where(FlowEdge.flow_id == flow.id)) + 1
+    edge=FlowEdge(flow_id=flow.id,source_node_id=payload.source_node_id,source_handle=payload.source_handle,target_node_id=payload.target_node_id,target_handle=payload.target_handle,sort_order=next_sort_order)
     db.add(edge); flow.updated_at=datetime.utcnow(); db.commit(); db.refresh(edge); return _edge_out(edge)
 
 
