@@ -60,5 +60,23 @@ async def webhook_info(token: str) -> dict:
 
 
 async def send_text(token: str, chat_id: int, text: str) -> dict:
-    result = await telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": text})
-    return result
+    return await telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": text})
+
+
+async def send_media(token: str, chat_id: int, media_type: str, media: str, caption: str | None = None) -> dict:
+    """Send Telegram media using a public URL or an existing Telegram file_id."""
+    methods = {
+        "image": ("sendPhoto", "photo"),
+        "photo": ("sendPhoto", "photo"),
+        "video": ("sendVideo", "video"),
+        "audio": ("sendAudio", "audio"),
+        "file": ("sendDocument", "document"),
+        "document": ("sendDocument", "document"),
+    }
+    if media_type not in methods:
+        raise TelegramError(f"Unsupported Telegram media type: {media_type}")
+    method, field = methods[media_type]
+    payload = {"chat_id": chat_id, field: media}
+    if caption:
+        payload["caption"] = caption
+    return await telegram_api(token, method, payload)
