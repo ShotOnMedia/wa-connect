@@ -31,7 +31,7 @@ class TelegramStatsOut(BaseModel): bots:int; contacts:int; conversations:int; me
 class TelegramSendIn(BaseModel): text:str=Field(min_length=1,max_length=4096)
 
 def bot_out(bot,workspace): return TelegramBotOut(id=bot.id,workspace_id=workspace.id,workspace_name=workspace.name,workspace_slug=workspace.slug,bot_id=bot.bot_id,username=bot.username,first_name=bot.first_name,active=bot.active,webhook_url=bot.webhook_url,has_token=bool(bot.access_token),created_at=bot.created_at)
-def contact_out(c): return {"id":c.id,"telegram_user_id":c.telegram_user_id,"username":c.username,"first_name":c.first_name,"last_name":c.last_name,"name":" ".join(filter(None,[c.first_name,c.last_name])) or c.username or str(c.telegram_user_id),"language_code":c.language_code,"is_bot":c.is_bot,"created_at":c.created_at,"updated_at":c.updated_at}
+def contact_out(c): return {"id":c.id,"telegram_user_id":c.telegram_user_id,"username":c.username,"first_name":c.first_name,"last_name":c.last_name,"name":" ".join(filter(None,[c.first_name,c.last_name])) or c.username or str(c.telegram_user_id),"language_code":c.language_code,"is_bot":False,"created_at":c.created_at,"updated_at":c.updated_at}
 def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
 def conversation_out(c):
     last=c.messages[-1] if c.messages else None
