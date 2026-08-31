@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.security import require_user
+from app.flow_channel_models import FlowChannelTarget
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowStatus, FlowStep
 from app.flow_schemas import (
     FlowCreate, FlowEdgeCreate, FlowEdgeOut, FlowGraphOut, FlowNodeCreate, FlowNodeOut,
@@ -26,7 +27,7 @@ def _require_manager(user: User) -> None:
 def _workspace_id(db: Session) -> int:
     workspace_id = db.scalar(select(Workspace.id).where(Workspace.active.is_(True)).order_by(Workspace.id.asc()).limit(1))
     if workspace_id is None:
-        raise HTTPException(status_code=400, detail="Connect a WhatsApp workspace before creating flows")
+        raise HTTPException(status_code=400, detail="Connect a workspace before creating flows")
     return int(workspace_id)
 
 
@@ -61,12 +62,24 @@ def _get_flow(flow_id: int, db: Session) -> Flow:
     return flow
 
 
+def _target_channel(db: Session, flow_id: int) -> str:
+    target = db.scalar(select(FlowChannelTarget.channel).where(FlowChannelTarget.flow_id == flow_id))
+    return target or "whatsapp"
+
+
 @router.get("", response_model=list[FlowOut])
-def list_flows(flow_status: FlowStatus | None = Query(default=None, alias="status"), db: Session = Depends(get_db)):
+def list_flows(
+    flow_status: FlowStatus | None = Query(default=None, alias="status"),
+    channel: str = Query(default="whatsapp", pattern="^(whatsapp|telegram|all)$"),
+    db: Session = Depends(get_db),
+):
     stmt = select(Flow).options(selectinload(Flow.steps)).order_by(Flow.updated_at.desc(), Flow.name.asc())
     if flow_status is not None:
         stmt = stmt.where(Flow.status == flow_status)
-    return [_flow_out(flow) for flow in db.scalars(stmt).all()]
+    flows = db.scalars(stmt).all()
+    if channel != "all":
+        flows = [flow for flow in flows if _target_channel(db, flow.id) == channel]
+    return [_flow_out(flow) for flow in flows]
 
 
 @router.post("", response_model=FlowOut, status_code=status.HTTP_201_CREATED)
@@ -77,7 +90,10 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db), user: User =
     if duplicate:
         raise HTTPException(status_code=409, detail="A flow with this name already exists")
     flow = Flow(workspace_id=workspace_id, name=payload.name, description=payload.description.strip() if payload.description else None, trigger_type=payload.trigger_type, trigger_value=payload.trigger_value.strip() if payload.trigger_value else None, stop_on_reply=payload.stop_on_reply, created_by_user_id=user.id)
-    db.add(flow); db.commit()
+    db.add(flow)
+    db.flush()
+    db.add(FlowChannelTarget(flow_id=flow.id, channel=payload.channel))
+    db.commit()
     return _flow_out(_get_flow(flow.id, db))
 
 
