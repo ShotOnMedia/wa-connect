@@ -45,6 +45,31 @@ class TelegramContact(Base):
     conversations: Mapped[list["TelegramConversation"]] = relationship(back_populates="contact")
 
 
+class TelegramContactFieldValue(Base):
+    __tablename__ = "telegram_contact_field_values"
+    __table_args__ = (
+        UniqueConstraint("contact_id", "field_id", name="uq_telegram_contact_field_value"),
+        Index("ix_telegram_contact_field_values_contact", "contact_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("telegram_contacts.id", ondelete="CASCADE"), index=True)
+    field_id: Mapped[int] = mapped_column(ForeignKey("contact_field_definitions.id", ondelete="CASCADE"), index=True)
+    value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TelegramContactTagLink(Base):
+    __tablename__ = "telegram_contact_tag_links"
+    __table_args__ = (UniqueConstraint("contact_id", "tag_id", name="uq_telegram_contact_tag_link"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("telegram_contacts.id", ondelete="CASCADE"), index=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("contact_tags.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class TelegramConversation(Base):
     __tablename__ = "telegram_conversations"
     __table_args__ = (
