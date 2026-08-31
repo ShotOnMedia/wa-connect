@@ -23,9 +23,11 @@ def compare(actual, expected, operator: str) -> bool:
 
 
 def set_field(db: Session, conversation: TelegramConversation, field_id: int, value) -> bool:
+    # Custom-field definitions are shared by the multi-channel flow builder. Telegram
+    # contacts keep their own values, but may reference a definition originally created
+    # while working in the WhatsApp workspace.
     field = db.scalar(select(ContactFieldDefinition).where(
         ContactFieldDefinition.id == int(field_id),
-        ContactFieldDefinition.workspace_id == conversation.workspace_id,
         ContactFieldDefinition.active.is_(True),
     ))
     if not field:
