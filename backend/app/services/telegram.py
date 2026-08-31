@@ -57,3 +57,8 @@ async def webhook_info(token: str) -> dict:
         "max_connections": result.get("max_connections"),
         "allowed_updates": result.get("allowed_updates") or [],
     }
+
+
+async def send_text(token: str, chat_id: int, text: str) -> dict:
+    result = await telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": text})
+    return result
