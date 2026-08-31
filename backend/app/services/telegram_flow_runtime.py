@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.flow_channel_models import FlowChannelTarget, TelegramFlowSession
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowStatus, FlowTriggerType
+from app.models import ContactFieldDefinition
 from app.services.telegram import TelegramError, send_text
 from app.services.telegram_flow_actions import assign_user, change_tag, condition_result, set_field, set_status
-from app.telegram_models import TelegramConversation, TelegramMessage
+from app.telegram_models import TelegramContactFieldValue, TelegramConversation, TelegramMessage
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,30 @@ def _next(by_id, outgoing, node_id, handle="next"):
     return by_id.get(matches[0].target_node_id) if matches else None
 
 
+def _render_text(db: Session, conversation: TelegramConversation, text) -> str:
+    """Resolve %custom_field_key% placeholders for the current Telegram contact."""
+    value = str(text or "")
+    keys = set(re.findall(r"%([A-Za-z0-9_.-]+)%", value))
+    if not keys:
+        return value
+    rows = db.execute(
+        select(ContactFieldDefinition.key, TelegramContactFieldValue.value_text)
+        .outerjoin(
+            TelegramContactFieldValue,
+            (TelegramContactFieldValue.field_id == ContactFieldDefinition.id) &
+            (TelegramContactFieldValue.contact_id == conversation.contact_id),
+        )
+        .where(
+            ContactFieldDefinition.workspace_id == conversation.workspace_id,
+            ContactFieldDefinition.key.in_(keys),
+        )
+    ).all()
+    values = {str(key): (field_value or "") for key, field_value in rows}
+    return re.sub(r"%([A-Za-z0-9_.-]+)%", lambda m: str(values.get(m.group(1), "")), value)
+
+
 async def _send(db, conversation, text):
-    text = str(text or "").strip()
+    text = _render_text(db, conversation, text).strip()
     if not text: return
     result = await send_text(conversation.bot.access_token, conversation.chat_id, text)
     timestamp = datetime.utcfromtimestamp(result["date"]) if result.get("date") else datetime.utcnow()
@@ -124,7 +147,7 @@ async def _run_from_node(db, flow, conversation, inbound, session, node, by_id, 
             node = _next(by_id, outgoing, node.id); continue
         if node_type == FlowNodeType.SET_FIELD.value:
             field_id = config.get("field_id") or config.get("capture_field_id")
-            if field_id: set_field(db, conversation, int(field_id), config.get("value"))
+            if field_id: set_field(db, conversation, int(field_id), _render_text(db, conversation, config.get("value")))
             node = _next(by_id, outgoing, node.id); continue
         if node_type == FlowNodeType.ASSIGN_USER.value:
             assign_user(db, conversation, config.get("user_id")); node = _next(by_id, outgoing, node.id); continue
