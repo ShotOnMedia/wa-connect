@@ -8,11 +8,12 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.security import ensure_bootstrap_admin
+from app import telegram_models  # noqa: F401 - registers Telegram tables on Base.metadata
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # v0.1.0 bootstrap. Replace with Alembic migrations before production release.
+    # v0.2.0 bootstrap. Replace with Alembic migrations before production release.
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
