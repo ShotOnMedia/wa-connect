@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -32,6 +33,10 @@ def _is_node_type(node: FlowNode, expected: FlowNodeType) -> bool:
 
 def _keyword_matches(expected: str | None, body: str | None) -> bool:
     return bool(expected and body and expected.strip().casefold() == body.strip().casefold())
+
+
+def _session_for_conversation(db: Session, conversation_id: int) -> TelegramFlowSession | None:
+    return db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id == conversation_id))
 
 
 def _matching_flows(db: Session, conversation: TelegramConversation, inbound: TelegramMessage) -> list[Flow]:
@@ -111,6 +116,128 @@ async def _send(db: Session, conversation: TelegramConversation, text: str) -> N
     logger.info("Telegram flow sent text conversation=%s message=%s", conversation.id, result.get("message_id"))
 
 
+def _validate_question_reply(config: dict, inbound: TelegramMessage) -> tuple[bool, str | None, str | None]:
+    reply_type = str(config.get("reply_type") or config.get("input_type") or "text").strip().lower()
+    actual_type = str(inbound.message_type or "text").strip().lower()
+    custom_error = str(config.get("validation_error") or "").strip()
+
+    expected_types = {
+        "photo": "photo", "image": "photo", "audio": "audio", "voice": "voice",
+        "video": "video", "document": "document", "file": "document", "sticker": "sticker",
+    }
+    if reply_type in expected_types:
+        expected = expected_types[reply_type]
+        accepted = {expected}
+        if reply_type in {"audio", "voice"}:
+            accepted = {"audio", "voice"}
+        if actual_type not in accepted:
+            return False, None, custom_error or f"Please reply with a {reply_type}."
+        return True, inbound.body or actual_type, None
+
+    if actual_type != "text":
+        return False, None, custom_error or "Please reply with text."
+
+    value = str(inbound.body or "").strip()
+    required = config.get("required", True) is not False
+    if required and not value:
+        return False, None, custom_error or "Please enter a reply."
+
+    if reply_type in {"number", "integer", "decimal"}:
+        try:
+            number = float(value.replace(",", "."))
+            if reply_type == "integer" and not number.is_integer():
+                raise ValueError
+        except ValueError:
+            return False, None, custom_error or ("Please enter a whole number." if reply_type == "integer" else "Please enter a valid number.")
+        minimum = config.get("min_value")
+        maximum = config.get("max_value")
+        if minimum not in (None, "") and number < float(minimum):
+            return False, None, custom_error or f"Please enter a value of at least {minimum}."
+        if maximum not in (None, "") and number > float(maximum):
+            return False, None, custom_error or f"Please enter a value no greater than {maximum}."
+        return True, str(int(number)) if reply_type == "integer" else str(number), None
+
+    if reply_type == "email" and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        return False, None, custom_error or "Please enter a valid email address."
+    if reply_type in {"phone", "telephone"}:
+        compact = re.sub(r"[\s().-]", "", value)
+        if not re.fullmatch(r"\+?\d{7,15}", compact):
+            return False, None, custom_error or "Please enter a valid phone number."
+    if reply_type == "date":
+        date_format = str(config.get("date_format") or "%Y-%m-%d")
+        try:
+            datetime.strptime(value, date_format)
+        except ValueError:
+            return False, None, custom_error or "Please enter a valid date."
+
+    min_length = config.get("min_length")
+    max_length = config.get("max_length")
+    if min_length not in (None, "") and len(value) < int(min_length):
+        return False, None, custom_error or f"Please enter at least {min_length} characters."
+    if max_length not in (None, "") and len(value) > int(max_length):
+        return False, None, custom_error or f"Please enter no more than {max_length} characters."
+    pattern = str(config.get("pattern") or "").strip()
+    if pattern:
+        try:
+            if not re.fullmatch(pattern, value):
+                return False, None, custom_error or "That reply is not in the expected format."
+        except re.error:
+            logger.warning("Invalid Telegram question validation regex: %s", pattern)
+
+    return True, value, None
+
+
+async def _run_from_node(
+    db: Session,
+    flow: Flow,
+    conversation: TelegramConversation,
+    inbound: TelegramMessage,
+    session: TelegramFlowSession,
+    node: FlowNode | None,
+    by_id: dict,
+    outgoing: dict,
+) -> bool:
+    safety = 0
+    while node and safety < 100:
+        safety += 1
+        session.current_node_id = node.id
+        session.status = "active"
+        session.waiting_for = None
+        session.updated_at = datetime.utcnow()
+        config = _json(node.config_json)
+        node_type = _enum_value(node.node_type)
+        logger.info("Telegram flow executing flow=%s node=%s type=%s config=%s", flow.id, node.id, node_type, config)
+
+        if node_type == FlowNodeType.SEND_MESSAGE.value:
+            await _send(db, conversation, config.get("text"))
+            node = _next(by_id, outgoing, node.id)
+            continue
+
+        if node_type == FlowNodeType.QUESTION.value:
+            await _send(db, conversation, config.get("text"))
+            session.status = "waiting"
+            session.waiting_for = "reply"
+            session.current_node_id = node.id
+            session.updated_at = datetime.utcnow()
+            db.flush()
+            logger.warning("TGTRACE Telegram flow waiting flow=%s session=%s node=%s", flow.id, session.id, node.id)
+            return True
+
+        logger.info("Telegram flow %s skipping unsupported node type %s", flow.id, node_type)
+        node = _next(by_id, outgoing, node.id)
+
+    if safety >= 100:
+        raise RuntimeError("Telegram flow graph exceeded 100 nodes; possible loop detected")
+
+    session.status = "completed"
+    session.current_node_id = None
+    session.waiting_for = None
+    session.ended_at = datetime.utcnow()
+    session.updated_at = datetime.utcnow()
+    db.flush()
+    return True
+
+
 async def _run_flow(db: Session, flow: Flow, conversation: TelegramConversation, inbound: TelegramMessage) -> bool:
     nodes, by_id, outgoing = _graph(db, flow.id)
     trigger = next((node for node in nodes if _is_node_type(node, FlowNodeType.TRIGGER)), None)
@@ -118,7 +245,7 @@ async def _run_flow(db: Session, flow: Flow, conversation: TelegramConversation,
         logger.warning("Telegram flow %s has no trigger node", flow.id)
         return False
 
-    session = db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id == conversation.id))
+    session = _session_for_conversation(db, conversation.id)
     now = datetime.utcnow()
     if not session:
         session = TelegramFlowSession(conversation_id=conversation.id, flow_id=flow.id)
@@ -136,40 +263,91 @@ async def _run_flow(db: Session, flow: Flow, conversation: TelegramConversation,
     node = _next(by_id, outgoing, trigger.id)
     if not node:
         logger.warning("Telegram flow %s trigger node %s has no next edge", flow.id, trigger.id)
+    return await _run_from_node(db, flow, conversation, inbound, session, node, by_id, outgoing)
 
-    safety = 0
-    while node and safety < 100:
-        safety += 1
-        session.current_node_id = node.id
-        session.updated_at = datetime.utcnow()
-        config = _json(node.config_json)
-        node_type = _enum_value(node.node_type)
-        logger.info("Telegram flow executing flow=%s node=%s type=%s config=%s", flow.id, node.id, node_type, config)
 
-        if node_type == FlowNodeType.SEND_MESSAGE.value:
-            await _send(db, conversation, config.get("text"))
-            node = _next(by_id, outgoing, node.id)
-            continue
+async def _resume_waiting_session(
+    db: Session,
+    conversation: TelegramConversation,
+    inbound: TelegramMessage,
+    session: TelegramFlowSession,
+) -> bool:
+    flow = db.get(Flow, session.flow_id)
+    if not flow or flow.status != FlowStatus.ACTIVE:
+        session.status = "reset"
+        session.current_node_id = None
+        session.waiting_for = None
+        session.ended_at = datetime.utcnow()
+        db.flush()
+        return False
 
-        if node_type == FlowNodeType.QUESTION.value:
-            await _send(db, conversation, config.get("text"))
-            session.status = "waiting"
-            session.waiting_for = "reply"
-            db.flush()
-            return True
+    target = db.scalar(select(FlowChannelTarget).where(FlowChannelTarget.flow_id == flow.id))
+    if not target or target.channel != "telegram" or flow.workspace_id != conversation.workspace_id:
+        session.status = "reset"
+        session.current_node_id = None
+        session.waiting_for = None
+        session.ended_at = datetime.utcnow()
+        db.flush()
+        return False
 
-        logger.info("Telegram flow %s skipping unsupported node type %s", flow.id, node_type)
-        node = _next(by_id, outgoing, node.id)
+    nodes, by_id, outgoing = _graph(db, flow.id)
+    waiting_node = by_id.get(session.current_node_id)
+    if not waiting_node or not _is_node_type(waiting_node, FlowNodeType.QUESTION):
+        session.status = "failed"
+        session.waiting_for = None
+        session.ended_at = datetime.utcnow()
+        db.flush()
+        return False
 
-    session.status = "completed"
-    session.current_node_id = None
+    config = _json(waiting_node.config_json)
+    valid, value, validation_error = _validate_question_reply(config, inbound)
+    session.last_inbound_message_id = inbound.id
+    session.updated_at = datetime.utcnow()
+
+    if not valid:
+        session.status = "waiting"
+        session.waiting_for = "reply"
+        await _send(db, conversation, validation_error or "Please try again.")
+        db.flush()
+        logger.warning("TGTRACE Telegram question rejected session=%s node=%s body=%r", session.id, waiting_node.id, inbound.body)
+        return True
+
+    # Telegram contacts do not yet share WhatsApp custom-field storage, so retain the
+    # captured value in the session trace for now and resume the graph immediately.
+    logger.warning(
+        "TGTRACE Telegram question captured session=%s node=%s field_id=%s value=%r",
+        session.id,
+        waiting_node.id,
+        config.get("capture_field_id") or config.get("save_reply_field_id") or config.get("field_id"),
+        value,
+    )
+    session.status = "active"
     session.waiting_for = None
-    session.ended_at = datetime.utcnow()
-    db.flush()
-    return True
+
+    next_node = _next(by_id, outgoing, waiting_node.id, "next")
+    if not next_node:
+        session.status = "completed"
+        session.current_node_id = None
+        session.ended_at = datetime.utcnow()
+        db.flush()
+        return True
+
+    return await _run_from_node(db, flow, conversation, inbound, session, next_node, by_id, outgoing)
 
 
 async def run_telegram_flows_for_inbound(db: Session, conversation: TelegramConversation, inbound: TelegramMessage) -> int:
+    existing = _session_for_conversation(db, conversation.id)
+    if existing and existing.status == "waiting":
+        try:
+            if await _resume_waiting_session(db, conversation, inbound, existing):
+                return 1
+        except TelegramError:
+            logger.exception("Telegram API error while resuming flow %s", existing.flow_id)
+            raise
+        except Exception:
+            logger.exception("Telegram flow resume failed flow=%s conversation=%s", existing.flow_id, conversation.id)
+            raise
+
     executed = 0
     for flow in _matching_flows(db, conversation, inbound):
         try:
