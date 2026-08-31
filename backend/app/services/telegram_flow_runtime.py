@@ -2,10 +2,8 @@ import json
 import logging
 import re
 from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from app.flow_channel_models import FlowChannelTarget, TelegramFlowSession
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowStatus, FlowTriggerType
 from app.models import ContactFieldDefinition
@@ -13,96 +11,68 @@ from app.services.telegram import TelegramError, send_buttons, send_media, send_
 from app.services.telegram_flow_actions import assign_user, change_tag, condition_result, set_field, set_status
 from app.telegram_models import TelegramContactFieldValue, TelegramConversation, TelegramMessage
 
-logger = logging.getLogger(__name__)
-
-
+logger=logging.getLogger(__name__)
 def _json(value):
-    if isinstance(value, dict): return value
-    try: return json.loads(value or "{}")
-    except (json.JSONDecodeError, TypeError): return {}
-
-
-def _enum(value): return getattr(value, "value", value)
-def _is(node, expected): return _enum(node.node_type) == expected.value
-def _session(db, conversation_id): return db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id == conversation_id))
-def _keyword(expected, body): return bool(expected and body and expected.strip().casefold() == body.strip().casefold())
-
-
-def _matching_flows(db, conversation, inbound):
-    flows = db.scalars(select(Flow).join(FlowChannelTarget, FlowChannelTarget.flow_id == Flow.id).where(Flow.workspace_id == conversation.workspace_id, Flow.status == FlowStatus.ACTIVE, FlowChannelTarget.channel == "telegram").order_by(Flow.id)).all()
-    count = db.scalar(select(func.count(TelegramMessage.id)).where(TelegramMessage.conversation_id == conversation.id, TelegramMessage.direction == "inbound")) or 0
-    return [f for f in flows if (_enum(f.trigger_type) == FlowTriggerType.KEYWORD.value and _keyword(f.trigger_value, inbound.body)) or (_enum(f.trigger_type) == FlowTriggerType.FIRST_MESSAGE.value and count == 1)]
-
-
-def _graph(db, flow_id):
-    nodes = db.scalars(select(FlowNode).where(FlowNode.flow_id == flow_id)).all(); edges = db.scalars(select(FlowEdge).where(FlowEdge.flow_id == flow_id).order_by(FlowEdge.sort_order, FlowEdge.id)).all(); by_id = {n.id:n for n in nodes}; out = {}
-    for edge in edges: out.setdefault(edge.source_node_id, []).append(edge)
-    return nodes, by_id, out
-
-
-def _next(by_id, out, node_id, handle="next"):
-    edges = [e for e in out.get(node_id, []) if e.source_handle == handle]
-    return by_id.get(edges[0].target_node_id) if edges else None
-
-
-def _button_nodes(by_id, out, interactive_id):
+    if isinstance(value,dict):return value
+    try:return json.loads(value or "{}")
+    except (json.JSONDecodeError,TypeError):return {}
+def _enum(value):return getattr(value,"value",value)
+def _is(node,expected):return _enum(node.node_type)==expected.value
+def _session(db,conversation_id):return db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id==conversation_id))
+def _keyword(expected,body):return bool(expected and body and expected.strip().casefold()==body.strip().casefold())
+def _matching_flows(db,conversation,inbound):
+    flows=db.scalars(select(Flow).join(FlowChannelTarget,FlowChannelTarget.flow_id==Flow.id).where(Flow.workspace_id==conversation.workspace_id,Flow.status==FlowStatus.ACTIVE,FlowChannelTarget.channel=="telegram").order_by(Flow.id)).all();count=db.scalar(select(func.count(TelegramMessage.id)).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.direction=="inbound")) or 0
+    return [f for f in flows if (_enum(f.trigger_type)==FlowTriggerType.KEYWORD.value and _keyword(f.trigger_value,inbound.body)) or (_enum(f.trigger_type)==FlowTriggerType.FIRST_MESSAGE.value and count==1)]
+def _graph(db,flow_id):
+    nodes=db.scalars(select(FlowNode).where(FlowNode.flow_id==flow_id)).all();edges=db.scalars(select(FlowEdge).where(FlowEdge.flow_id==flow_id).order_by(FlowEdge.sort_order,FlowEdge.id)).all();by_id={n.id:n for n in nodes};out={}
+    for edge in edges:out.setdefault(edge.source_node_id,[]).append(edge)
+    return nodes,by_id,out
+def _next(by_id,out,node_id,handle="next"):
+    edges=[e for e in out.get(node_id,[]) if e.source_handle==handle];return by_id.get(edges[0].target_node_id) if edges else None
+def _choice_nodes(by_id,out,interactive_id,handle):
     result=[]
-    for edge in out.get(interactive_id, []):
-        if edge.source_handle != "buttons": continue
+    for edge in out.get(interactive_id,[]):
+        if edge.source_handle!=handle:continue
         node=by_id.get(edge.target_node_id)
-        if node and _enum(node.node_type)==FlowNodeType.BUTTON.value: result.append(node)
+        if node and _enum(node.node_type)==FlowNodeType.BUTTON.value:result.append(node)
     return result
-
-
-def _render(db, conversation, text):
-    value=str(text or ""); keys=set(re.findall(r"%([A-Za-z0-9_.-]+)%", value))
+def _all_choices(by_id,out,interactive_id):return _choice_nodes(by_id,out,interactive_id,"buttons")+_choice_nodes(by_id,out,interactive_id,"list_messages")
+def _render(db,conversation,text):
+    value=str(text or "");keys=set(re.findall(r"%([A-Za-z0-9_.-]+)%",value))
     if not keys:return value
-    rows=db.execute(select(ContactFieldDefinition.key,TelegramContactFieldValue.value_text).outerjoin(TelegramContactFieldValue,(TelegramContactFieldValue.field_id==ContactFieldDefinition.id)&(TelegramContactFieldValue.contact_id==conversation.contact_id)).where(ContactFieldDefinition.workspace_id==conversation.workspace_id,ContactFieldDefinition.key.in_(keys))).all(); values={str(k):(v or "") for k,v in rows}
+    rows=db.execute(select(ContactFieldDefinition.key,TelegramContactFieldValue.value_text).outerjoin(TelegramContactFieldValue,(TelegramContactFieldValue.field_id==ContactFieldDefinition.id)&(TelegramContactFieldValue.contact_id==conversation.contact_id)).where(ContactFieldDefinition.workspace_id==conversation.workspace_id,ContactFieldDefinition.key.in_(keys))).all();values={str(k):(v or "") for k,v in rows}
     return re.sub(r"%([A-Za-z0-9_.-]+)%",lambda m:str(values.get(m.group(1),"")),value)
-
-
-def _store_outbound(db, conversation, result, message_type, body=None):
-    ts=datetime.utcfromtimestamp(result["date"]) if result.get("date") else datetime.utcnow(); db.add(TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(result["message_id"]),direction="outbound",message_type=message_type,body=body,payload_json=json.dumps(result,ensure_ascii=False),status="sent",telegram_timestamp=ts)); conversation.last_message_at=ts; db.flush()
-
-
-async def _send(db, conversation, text):
+def _store_outbound(db,conversation,result,message_type,body=None):
+    ts=datetime.utcfromtimestamp(result["date"]) if result.get("date") else datetime.utcnow();db.add(TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(result["message_id"]),direction="outbound",message_type=message_type,body=body,payload_json=json.dumps(result,ensure_ascii=False),status="sent",telegram_timestamp=ts));conversation.last_message_at=ts;db.flush()
+async def _send(db,conversation,text):
     text=_render(db,conversation,text).strip()
     if not text:return
-    result=await send_text(conversation.bot.access_token,conversation.chat_id,text); _store_outbound(db,conversation,result,"text",result.get("text") or text)
-
-
+    result=await send_text(conversation.bot.access_token,conversation.chat_id,text);_store_outbound(db,conversation,result,"text",result.get("text") or text)
 async def _send_media(db,conversation,kind,config):
-    media=_render(db,conversation,config.get("media") or config.get("media_url") or config.get("url") or config.get("file_id") or "").strip(); caption=_render(db,conversation,config.get("caption") or config.get("text") or "").strip()
+    media=_render(db,conversation,config.get("media") or config.get("media_url") or config.get("url") or config.get("file_id") or "").strip();caption=_render(db,conversation,config.get("caption") or config.get("text") or "").strip()
     if not media:logger.warning("Telegram %s flow block has no media URL/file_id",kind);return
-    result=await send_media(conversation.bot.access_token,conversation.chat_id,kind,media,caption or None); _store_outbound(db,conversation,result,kind,result.get("caption") or caption or None)
-
-
+    result=await send_media(conversation.bot.access_token,conversation.chat_id,kind,media,caption or None);_store_outbound(db,conversation,result,kind,result.get("caption") or caption or None)
 async def _send_interactive(db,flow,conversation,node,by_id,out,config):
-    text=_render(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option"
+    text=_render(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");nodes=(list_nodes[:10] if list_nodes else button_nodes)
     buttons=[]
-    for button_node in _button_nodes(by_id,out,node.id):
-        cfg=_json(button_node.config_json); action=str(cfg.get("action") or "next"); label=_render(db,conversation,cfg.get("label") or button_node.title or "Button").strip()
-        item={"label":label,"id":button_node.id,"value":f"wfbtn:{button_node.id}"}
-        if action=="url" and cfg.get("action_value"):item["url"]=_render(db,conversation,cfg.get("action_value")).strip()
+    for button_node in nodes:
+        cfg=_json(button_node.config_json);action=str(cfg.get("action") or "next");label=_render(db,conversation,cfg.get("label") or button_node.title or "Option").strip();item={"label":label,"id":button_node.id,"value":f"wfbtn:{button_node.id}"}
+        if not list_nodes and action=="url" and cfg.get("action_value"):item["url"]=_render(db,conversation,cfg.get("action_value")).strip()
         buttons.append(item)
-    if not buttons:
-        logger.warning("Telegram interactive node %s has no connected Button blocks",node.id); await _send(db,conversation,text); return False
-    result=await send_buttons(conversation.bot.access_token,conversation.chat_id,text,buttons); _store_outbound(db,conversation,result,"interactive",text); return any(not b.get("url") for b in buttons)
-
-
+    if not buttons:logger.warning("Telegram interactive node %s has no connected choice blocks",node.id);await _send(db,conversation,text);return False
+    result=await send_buttons(conversation.bot.access_token,conversation.chat_id,text,buttons);_store_outbound(db,conversation,result,"interactive",text);return any(not b.get("url") for b in buttons)
 def _validate(config,inbound):
-    reply_type=str(config.get("reply_type") or config.get("input_type") or "text").strip().lower(); actual=str(inbound.message_type or "text").strip().lower(); err=str(config.get("validation_error") or "").strip(); expected={"photo":"photo","image":"photo","audio":"audio","voice":"voice","video":"video","document":"document","file":"document","sticker":"sticker"}
+    reply_type=str(config.get("reply_type") or config.get("input_type") or "text").strip().lower();actual=str(inbound.message_type or "text").strip().lower();err=str(config.get("validation_error") or "").strip();expected={"photo":"photo","image":"photo","audio":"audio","voice":"voice","video":"video","document":"document","file":"document","sticker":"sticker"}
     if reply_type in expected:
-        accepted={expected[reply_type]}; accepted={"audio","voice"} if reply_type in {"audio","voice"} else accepted
+        accepted={expected[reply_type]};accepted={"audio","voice"} if reply_type in {"audio","voice"} else accepted
         return (True,inbound.body or actual,None) if actual in accepted else (False,None,err or f"Please reply with a {reply_type}.")
     if actual!="text":return False,None,err or "Please reply with text."
     value=str(inbound.body or "").strip()
     if config.get("required",True) is not False and not value:return False,None,err or "Please enter a reply."
     if reply_type in {"number","integer","decimal"}:
-        try:
-            num=float(value.replace(",","."));
-            if reply_type=="integer" and not num.is_integer():raise ValueError
+        try:num=float(value.replace(",","."))
         except ValueError:return False,None,err or "Please enter a valid number."
+        if reply_type=="integer" and not num.is_integer():return False,None,err or "Please enter a whole number."
         lo,hi=config.get("min_value"),config.get("max_value")
         if lo not in (None,"") and num<float(lo):return False,None,err or f"Please enter a value of at least {lo}."
         if hi not in (None,"") and num>float(hi):return False,None,err or f"Please enter a value no greater than {hi}."
@@ -121,8 +91,6 @@ def _validate(config,inbound):
             if not re.fullmatch(pattern,value):return False,None,err or "That reply is not in the expected format."
         except re.error:logger.warning("Invalid Telegram question regex: %s",pattern)
     return True,value,None
-
-
 async def _run_from(db,flow,conversation,inbound,session,node,by_id,out):
     safety=0
     while node and safety<100:
@@ -131,8 +99,7 @@ async def _run_from(db,flow,conversation,inbound,session,node,by_id,out):
         if kind in {"image","video","audio","file"}:await _send_media(db,conversation,kind,cfg);node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.QUESTION.value:await _send(db,conversation,cfg.get("text"));session.status="waiting";session.waiting_for="reply";db.flush();return True
         if kind==FlowNodeType.INTERACTIVE.value:
-            waits=await _send_interactive(db,flow,conversation,node,by_id,out,cfg)
-            if waits:session.status="waiting";session.waiting_for="button";db.flush();return True
+            if await _send_interactive(db,flow,conversation,node,by_id,out,cfg):session.status="waiting";session.waiting_for="button";db.flush();return True
             node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.BUTTON.value:
             action=str(cfg.get("action") or "next")
@@ -155,17 +122,12 @@ async def _run_from(db,flow,conversation,inbound,session,node,by_id,out):
         logger.info("Telegram flow %s skipping unsupported node type %s",flow.id,kind);node=_next(by_id,out,node.id)
     if safety>=100:raise RuntimeError("Telegram flow graph exceeded 100 nodes; possible loop detected")
     session.status="completed";session.current_node_id=None;session.waiting_for=None;session.ended_at=datetime.utcnow();session.updated_at=datetime.utcnow();db.flush();return True
-
-
 async def _run_flow(db,flow,conversation,inbound):
     nodes,by_id,out=_graph(db,flow.id);trigger=next((n for n in nodes if _is(n,FlowNodeType.TRIGGER)),None)
     if not trigger:return False
     session=_session(db,conversation.id);now=datetime.utcnow()
     if not session:session=TelegramFlowSession(conversation_id=conversation.id,flow_id=flow.id);db.add(session)
-    session.flow_id=flow.id;session.status="active";session.current_node_id=trigger.id;session.waiting_for=None;session.last_inbound_message_id=inbound.id;session.started_at=now;session.updated_at=now;session.ended_at=None;db.flush()
-    return await _run_from(db,flow,conversation,inbound,session,_next(by_id,out,trigger.id),by_id,out)
-
-
+    session.flow_id=flow.id;session.status="active";session.current_node_id=trigger.id;session.waiting_for=None;session.last_inbound_message_id=inbound.id;session.started_at=now;session.updated_at=now;session.ended_at=None;db.flush();return await _run_from(db,flow,conversation,inbound,session,_next(by_id,out,trigger.id),by_id,out)
 async def _resume(db,conversation,inbound,session):
     flow=db.get(Flow,session.flow_id);target=db.scalar(select(FlowChannelTarget).where(FlowChannelTarget.flow_id==session.flow_id)) if flow else None
     if not flow or flow.status!=FlowStatus.ACTIVE or not target or target.channel!="telegram" or flow.workspace_id!=conversation.workspace_id:session.status="reset";session.current_node_id=None;session.waiting_for=None;session.ended_at=datetime.utcnow();db.flush();return False
@@ -173,8 +135,7 @@ async def _resume(db,conversation,inbound,session):
     if not waiting:session.status="failed";session.waiting_for=None;session.ended_at=datetime.utcnow();db.flush();return False
     session.last_inbound_message_id=inbound.id;session.updated_at=datetime.utcnow()
     if session.waiting_for=="button" and _enum(waiting.node_type)==FlowNodeType.INTERACTIVE.value:
-        match=re.fullmatch(r"wfbtn:(\d+)",str(inbound.body or "").strip()); button=by_id.get(int(match.group(1))) if match else None
-        valid_ids={n.id for n in _button_nodes(by_id,out,waiting.id)}
+        match=re.fullmatch(r"wfbtn:(\d+)",str(inbound.body or "").strip());button=by_id.get(int(match.group(1))) if match else None;valid_ids={n.id for n in _all_choices(by_id,out,waiting.id)}
         if not button or button.id not in valid_ids:session.status="waiting";session.waiting_for="button";db.flush();return True
         session.status="active";session.waiting_for=None;return await _run_from(db,flow,conversation,inbound,session,button,by_id,out)
     if not _is(waiting,FlowNodeType.QUESTION):session.status="failed";session.waiting_for=None;session.ended_at=datetime.utcnow();db.flush();return False
@@ -185,8 +146,6 @@ async def _resume(db,conversation,inbound,session):
     session.status="active";session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
     if not next_node:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return True
     return await _run_from(db,flow,conversation,inbound,session,next_node,by_id,out)
-
-
 async def run_telegram_flows_for_inbound(db:Session,conversation:TelegramConversation,inbound:TelegramMessage)->int:
     existing=_session(db,conversation.id)
     if existing and existing.status=="waiting":
