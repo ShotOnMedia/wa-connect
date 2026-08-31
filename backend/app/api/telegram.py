@@ -66,7 +66,10 @@ async def connect_bot(request:TelegramConnectIn,db:Session=Depends(get_db)):
 async def bot_health(bot_db_id:int,db:Session=Depends(get_db)):
     bot=db.scalar(select(TelegramBot).where(TelegramBot.id==bot_db_id))
     if not bot:raise HTTPException(status_code=404,detail="Telegram bot not found")
-    try:return {"connected":True,"identity":await verify_bot(bot.access_token),"webhook":await webhook_info(bot.access_token)}
+    try:
+        identity=await verify_bot(bot.access_token)
+        if bot.webhook_url and bot.webhook_secret: await set_webhook(bot.access_token,bot.webhook_url,bot.webhook_secret)
+        return {"connected":True,"identity":identity,"webhook":await webhook_info(bot.access_token)}
     except TelegramError as exc:raise HTTPException(status_code=502,detail=str(exc)) from exc
 @router.get("/stats",response_model=TelegramStatsOut,dependencies=[Depends(require_user)])
 def telegram_stats(db:Session=Depends(get_db)):
