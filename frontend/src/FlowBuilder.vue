@@ -3,18 +3,18 @@ import { nextTick, ref } from 'vue'
 import FlowsLibrary from './FlowsLibrary.vue'
 import VisualFlowBuilder from './VisualFlowBuilderV2.vue'
 
-const props=defineProps({currentUser:{type:Object,required:true}})
+const props=defineProps({currentUser:{type:Object,required:true},channel:{type:String,default:'whatsapp'}})
 const editing=ref(false), builderHost=ref(null)
 async function openBuilder(id=null){editing.value=true;await nextTick();if(id){let tries=0;const choose=()=>{const select=builderHost.value?.querySelector('.flow-picker > select');if(select&&[...select.options].some(o=>Number(o.value)===Number(id))){select.value=String(id);select.dispatchEvent(new Event('change',{bubbles:true}));return}if(tries++<20)setTimeout(choose,75)};choose()}else{setTimeout(()=>builderHost.value?.querySelector('.flow-picker form input')?.focus(),100)}}
 function backToLibrary(){editing.value=false}
 </script>
 
 <template>
-  <div v-if="editing" ref="builderHost" class="flow-builder-host">
+  <div v-if="editing" ref="builderHost" class="flow-builder-host" :data-channel="channel">
     <button class="back-library" @click="backToLibrary">← All flows</button>
-    <VisualFlowBuilder :current-user="currentUser"/>
+    <VisualFlowBuilder :current-user="currentUser" :channel="channel"/>
   </div>
-  <FlowsLibrary v-else @edit="openBuilder" @create="openBuilder()"/>
+  <FlowsLibrary v-else :channel="channel" @edit="openBuilder" @create="openBuilder()"/>
 </template>
 
 <style scoped>
