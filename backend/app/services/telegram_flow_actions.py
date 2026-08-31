@@ -22,14 +22,44 @@ def compare(actual, expected, operator: str) -> bool:
     return False
 
 
-def set_field(db: Session, conversation: TelegramConversation, field_id: int, value) -> bool:
-    # Custom-field definitions are shared by the multi-channel flow builder. Telegram
-    # contacts keep their own values, but may reference a definition originally created
-    # while working in the WhatsApp workspace.
-    field = db.scalar(select(ContactFieldDefinition).where(
+def _field_for_telegram_workspace(db: Session, conversation: TelegramConversation, field_id: int) -> ContactFieldDefinition | None:
+    source = db.scalar(select(ContactFieldDefinition).where(
         ContactFieldDefinition.id == int(field_id),
         ContactFieldDefinition.active.is_(True),
     ))
+    if not source:
+        return None
+    if source.workspace_id == conversation.workspace_id:
+        return source
+
+    target = db.scalar(select(ContactFieldDefinition).where(
+        ContactFieldDefinition.workspace_id == conversation.workspace_id,
+        ContactFieldDefinition.key == source.key,
+    ))
+    if target:
+        return target
+
+    target = ContactFieldDefinition(
+        workspace_id=conversation.workspace_id,
+        key=source.key,
+        label=source.label,
+        field_type=source.field_type,
+        options_json=source.options_json,
+        required=source.required,
+        active=source.active,
+        sort_order=source.sort_order,
+    )
+    db.add(target)
+    db.flush()
+    return target
+
+
+def set_field(db: Session, conversation: TelegramConversation, field_id: int, value) -> bool:
+    # The visual builder currently exposes one shared custom-field catalogue across
+    # channels. Mirror a selected definition into the Telegram workspace on first use,
+    # then store the Telegram contact's value against that local definition. This keeps
+    # %field_key% resolution and conditions workspace-safe while preserving one picker UI.
+    field = _field_for_telegram_workspace(db, conversation, field_id)
     if not field:
         return False
     text = None if value is None else str(value).strip()
@@ -115,6 +145,7 @@ def condition_result(db: Session, conversation: TelegramConversation, config: di
             .join(ContactFieldDefinition, ContactFieldDefinition.id == TelegramContactFieldValue.field_id)
             .where(
                 TelegramContactFieldValue.contact_id == conversation.contact_id,
+                ContactFieldDefinition.workspace_id == conversation.workspace_id,
                 ContactFieldDefinition.key == field_key,
             )
         ).first()
