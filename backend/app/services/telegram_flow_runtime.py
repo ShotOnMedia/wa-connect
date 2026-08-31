@@ -13,11 +13,21 @@ from app.telegram_models import TelegramConversation, TelegramMessage
 logger = logging.getLogger(__name__)
 
 
-def _json(value: str | None) -> dict:
+def _json(value: str | dict | None) -> dict:
+    if isinstance(value, dict):
+        return value
     try:
         return json.loads(value or "{}")
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _enum_value(value):
+    return getattr(value, "value", value)
+
+
+def _is_node_type(node: FlowNode, expected: FlowNodeType) -> bool:
+    return _enum_value(node.node_type) == expected.value
 
 
 def _keyword_matches(expected: str | None, body: str | None) -> bool:
@@ -42,11 +52,20 @@ def _matching_flows(db: Session, conversation: TelegramConversation, inbound: Te
             TelegramMessage.direction == "inbound",
         )
     ) or 0
-    return [
+    matched = [
         flow for flow in flows
-        if (flow.trigger_type == FlowTriggerType.KEYWORD and _keyword_matches(flow.trigger_value, inbound.body))
-        or (flow.trigger_type == FlowTriggerType.FIRST_MESSAGE and inbound_count == 1)
+        if (_enum_value(flow.trigger_type) == FlowTriggerType.KEYWORD.value and _keyword_matches(flow.trigger_value, inbound.body))
+        or (_enum_value(flow.trigger_type) == FlowTriggerType.FIRST_MESSAGE.value and inbound_count == 1)
     ]
+    logger.info(
+        "Telegram flow match workspace=%s conversation=%s inbound=%r active=%s matched=%s",
+        conversation.workspace_id,
+        conversation.id,
+        inbound.body,
+        [flow.id for flow in flows],
+        [flow.id for flow in matched],
+    )
+    return matched
 
 
 def _graph(db: Session, flow_id: int):
@@ -56,6 +75,12 @@ def _graph(db: Session, flow_id: int):
     outgoing: dict[int, list[FlowEdge]] = {}
     for edge in edges:
         outgoing.setdefault(edge.source_node_id, []).append(edge)
+    logger.info(
+        "Telegram flow graph flow=%s nodes=%s edges=%s",
+        flow_id,
+        [(node.id, _enum_value(node.node_type)) for node in nodes],
+        [(edge.id, edge.source_node_id, edge.source_handle, edge.target_node_id) for edge in edges],
+    )
     return nodes, by_id, outgoing
 
 
@@ -67,6 +92,7 @@ def _next(by_id: dict, outgoing: dict, node_id: int, handle: str = "next") -> Fl
 async def _send(db: Session, conversation: TelegramConversation, text: str) -> None:
     text = str(text or "").strip()
     if not text:
+        logger.warning("Telegram flow attempted to send an empty text conversation=%s", conversation.id)
         return
     result = await send_text(conversation.bot.access_token, conversation.chat_id, text)
     timestamp = datetime.utcfromtimestamp(result["date"]) if result.get("date") else datetime.utcnow()
@@ -82,11 +108,12 @@ async def _send(db: Session, conversation: TelegramConversation, text: str) -> N
     ))
     conversation.last_message_at = timestamp
     db.flush()
+    logger.info("Telegram flow sent text conversation=%s message=%s", conversation.id, result.get("message_id"))
 
 
 async def _run_flow(db: Session, flow: Flow, conversation: TelegramConversation, inbound: TelegramMessage) -> bool:
     nodes, by_id, outgoing = _graph(db, flow.id)
-    trigger = next((node for node in nodes if node.node_type == FlowNodeType.TRIGGER), None)
+    trigger = next((node for node in nodes if _is_node_type(node, FlowNodeType.TRIGGER)), None)
     if not trigger:
         logger.warning("Telegram flow %s has no trigger node", flow.id)
         return False
@@ -107,26 +134,31 @@ async def _run_flow(db: Session, flow: Flow, conversation: TelegramConversation,
     db.flush()
 
     node = _next(by_id, outgoing, trigger.id)
+    if not node:
+        logger.warning("Telegram flow %s trigger node %s has no next edge", flow.id, trigger.id)
+
     safety = 0
     while node and safety < 100:
         safety += 1
         session.current_node_id = node.id
         session.updated_at = datetime.utcnow()
         config = _json(node.config_json)
+        node_type = _enum_value(node.node_type)
+        logger.info("Telegram flow executing flow=%s node=%s type=%s config=%s", flow.id, node.id, node_type, config)
 
-        if node.node_type == FlowNodeType.SEND_MESSAGE:
+        if node_type == FlowNodeType.SEND_MESSAGE.value:
             await _send(db, conversation, config.get("text"))
             node = _next(by_id, outgoing, node.id)
             continue
 
-        if node.node_type == FlowNodeType.QUESTION:
+        if node_type == FlowNodeType.QUESTION.value:
             await _send(db, conversation, config.get("text"))
             session.status = "waiting"
             session.waiting_for = "reply"
             db.flush()
             return True
 
-        logger.info("Telegram flow %s skipping unsupported node type %s", flow.id, node.node_type.value)
+        logger.info("Telegram flow %s skipping unsupported node type %s", flow.id, node_type)
         node = _next(by_id, outgoing, node.id)
 
     session.status = "completed"
