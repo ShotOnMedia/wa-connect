@@ -35,10 +35,23 @@ async def send_text_message(phone_number_id:str,access_token:str,to:str,text:str
 async def send_reply_buttons(phone_number_id:str,access_token:str,to:str,text:str,buttons:list[dict])->dict:
     actions=[]
     for i,b in enumerate(buttons[:3]):
-        label=str(b.get("label") or f"Option {i+1}")[:20]; value=str(b.get("value") or b.get("id") or f"option_{i+1}")[:256]
+        label=str(b.get("label") or f"Option {i+1}")[:20];value=str(b.get("value") or b.get("id") or f"option_{i+1}")[:256]
         actions.append({"type":"reply","reply":{"id":value,"title":label}})
     if not actions:raise WhatsAppError("Interactive message requires at least one reply button")
     return await _send_message(phone_number_id,access_token,{"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"interactive","interactive":{"type":"button","body":{"text":text},"action":{"buttons":actions}}})
+
+async def send_list_message(phone_number_id:str,access_token:str,to:str,text:str,rows:list[dict],button_text:str="Choose",section_title:str="Options")->dict:
+    items=[]
+    for i,row in enumerate(rows[:10]):
+        title=str(row.get("label") or f"Option {i+1}")[:24]
+        row_id=str(row.get("value") or row.get("id") or f"option_{i+1}")[:200]
+        description=str(row.get("description") or "").strip()[:72]
+        item={"id":row_id,"title":title}
+        if description:item["description"]=description
+        items.append(item)
+    if not items:raise WhatsAppError("List message requires at least one row")
+    interactive={"type":"list","body":{"text":text},"action":{"button":str(button_text or "Choose")[:20],"sections":[{"title":str(section_title or "Options")[:24],"rows":items}]}}
+    return await _send_message(phone_number_id,access_token,{"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"interactive","interactive":interactive})
 
 async def send_media_message(phone_number_id:str,access_token:str,to:str,media_type:str,media:str,caption:str|None=None,filename:str|None=None)->dict:
     wa_type={"image":"image","video":"video","audio":"audio","file":"document","document":"document"}.get(media_type)
