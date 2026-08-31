@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api } from './api'
-import App from './App.vue'
+import PlatformShell from './PlatformShell.vue'
 
 const loading = ref(true)
 const user = ref(null)
@@ -51,7 +51,7 @@ onMounted(checkSession)
       </div>
       <p class="eyebrow">Welcome back</p>
       <h1>Sign in</h1>
-      <p class="login-intro">Sign in to access live chat and WhatsApp settings.</p>
+      <p class="login-intro">Sign in to access your WA Connect workspace.</p>
       <form @submit.prevent="login">
         <label>Email address<input v-model="form.email" type="email" autocomplete="username" required autofocus /></label>
         <label>Password<input v-model="form.password" type="password" autocomplete="current-password" required /></label>
@@ -60,5 +60,5 @@ onMounted(checkSession)
       </form>
     </section>
   </main>
-  <App v-else :current-user="user" @logout="logout" />
+  <PlatformShell v-else :current-user="user" @logout="logout" />
 </template>
