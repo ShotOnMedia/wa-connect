@@ -12,7 +12,7 @@ class FlowTriggerType(str, Enum):
 class FlowStepType(str, Enum):
     SEND_MESSAGE="send_message"; ADD_TAG="add_tag"; REMOVE_TAG="remove_tag"; SET_FIELD="set_field"; ASSIGN_USER="assign_user"; SET_STATUS="set_status"; DELAY="delay"
 class FlowNodeType(str, Enum):
-    TRIGGER="trigger"; SEND_MESSAGE="send_message"; IMAGE="image"; VIDEO="video"; AUDIO="audio"; FILE="file"; LOCATION="location"; QUESTION="question"; INTERACTIVE="interactive"; BUTTON="button"; COMMERCE="commerce"; TEMPLATE="template"; ADD_TAG="add_tag"; REMOVE_TAG="remove_tag"; SET_FIELD="set_field"; ASSIGN_USER="assign_user"; SET_STATUS="set_status"; CONDITION="condition"; DELAY="delay"; HTTP_REQUEST="http_request"
+    TRIGGER="trigger"; SEND_MESSAGE="send_message"; IMAGE="image"; VIDEO="video"; AUDIO="audio"; FILE="file"; LOCATION="location"; REQUEST_LOCATION="request_location"; QUESTION="question"; USER_INPUT_FLOW="user_input_flow"; INTERACTIVE="interactive"; BUTTON="button"; COMMERCE="commerce"; TEMPLATE="template"; ADD_TAG="add_tag"; REMOVE_TAG="remove_tag"; SET_FIELD="set_field"; ASSIGN_USER="assign_user"; SET_STATUS="set_status"; CONDITION="condition"; DELAY="delay"; HTTP_REQUEST="http_request"
 class FlowSessionStatus(str, Enum):
     ACTIVE="active"; WAITING="waiting"; COMPLETED="completed"; RESET="reset"; FAILED="failed"
 
