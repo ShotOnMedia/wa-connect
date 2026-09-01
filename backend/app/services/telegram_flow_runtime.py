@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.flow_channel_models import FlowChannelTarget, TelegramFlowSession
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowStatus, FlowTriggerType
 from app.models import ContactFieldDefinition
-from app.services.telegram import TelegramError, send_buttons, send_media, send_text
+from app.services.telegram import TelegramError, send_buttons, send_media, send_product_card, send_text
 from app.services.telegram_flow_actions import assign_user, change_tag, condition_result, set_field, set_status
 from app.telegram_models import TelegramContactFieldValue, TelegramConversation, TelegramMessage
 
@@ -52,6 +52,9 @@ async def _send_media(db,conversation,kind,config):
     media=_render(db,conversation,config.get("media") or config.get("media_url") or config.get("url") or config.get("file_id") or "").strip();caption=_render(db,conversation,config.get("caption") or config.get("text") or "").strip()
     if not media:logger.warning("Telegram %s flow block has no media URL/file_id",kind);return
     result=await send_media(conversation.bot.access_token,conversation.chat_id,kind,media,caption or None);_store_outbound(db,conversation,result,kind,result.get("caption") or caption or None)
+async def _send_commerce(db,conversation,config):
+    name=_render(db,conversation,config.get("product_name") or "Product").strip() or "Product";description=_render(db,conversation,config.get("product_description") or "").strip();price=_render(db,conversation,config.get("product_price") or "").strip();currency=_render(db,conversation,config.get("product_currency") or "").strip();image=_render(db,conversation,config.get("product_image") or "").strip();url=_render(db,conversation,config.get("product_url") or "").strip();button=_render(db,conversation,config.get("product_button_text") or "View product").strip() or "View product"
+    result=await send_product_card(conversation.bot.access_token,conversation.chat_id,name,description,price,currency,image,url,button);_store_outbound(db,conversation,result,"commerce",result.get("caption") or result.get("text") or name)
 async def _send_interactive(db,flow,conversation,node,by_id,out,config):
     text=_render(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");nodes=(list_nodes[:10] if list_nodes else button_nodes)
     buttons=[]
@@ -97,8 +100,11 @@ async def _run_from(db,flow,conversation,inbound,session,node,by_id,out):
         safety+=1;session.current_node_id=node.id;session.status="active";session.waiting_for=None;session.updated_at=datetime.utcnow();cfg=_json(node.config_json);kind=_enum(node.node_type)
         if kind==FlowNodeType.SEND_MESSAGE.value:await _send(db,conversation,cfg.get("text"));node=_next(by_id,out,node.id);continue
         if kind in {"image","video","audio","file"}:await _send_media(db,conversation,kind,cfg);node=_next(by_id,out,node.id);continue
+        if kind==FlowNodeType.COMMERCE.value:await _send_commerce(db,conversation,cfg);node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.QUESTION.value:await _send(db,conversation,cfg.get("text"));session.status="waiting";session.waiting_for="reply";db.flush();return True
         if kind==FlowNodeType.INTERACTIVE.value:
+            ecommerce=_next(by_id,out,node.id,"ecommerce")
+            if ecommerce and _enum(ecommerce.node_type)==FlowNodeType.COMMERCE.value:node=ecommerce;continue
             if await _send_interactive(db,flow,conversation,node,by_id,out,cfg):session.status="waiting";session.waiting_for="button";db.flush();return True
             node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.BUTTON.value:
