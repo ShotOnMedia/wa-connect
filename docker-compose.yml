@@ -15,7 +15,7 @@ services:
 
   delay-worker:
     build: ./backend
-    command: sh -c "alembic upgrade head && python -m app.workers.flow_delay_worker"
+    command: python -m app.workers.flow_delay_worker
     env_file: .env
     volumes:
       - ./backend:/app
