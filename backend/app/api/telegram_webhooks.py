@@ -29,6 +29,17 @@ def detect_message_type(message:dict)->tuple[str,str|None]:
     return "unknown",None
 
 
+def _callback_label(message:dict,data:str)->str:
+    """Return the human-facing Telegram button label while keeping callback data in payload_json."""
+    markup=(message or {}).get("reply_markup") or {}
+    for row in markup.get("inline_keyboard") or []:
+        for button in row or []:
+            if str((button or {}).get("callback_data") or "")==data:
+                label=str((button or {}).get("text") or "").strip()
+                if label:return label
+    return data
+
+
 def _upsert_contact_conversation(db,bot,sender,chat):
     sender_id=sender.get("id");chat_id=chat.get("id")
     if sender_id is None or chat_id is None:return None,None
@@ -59,10 +70,17 @@ async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api
         if not conversation:return {"ok":True,"processed":0,"ignored":True}
         synthetic_id=-abs(update_id or int(datetime.utcnow().timestamp()*1000));existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==synthetic_id))
         if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
-        timestamp=datetime.utcnow();inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=synthetic_id,direction="inbound",message_type="button",body=data,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
+        timestamp=datetime.utcnow();display_body=_callback_label(source_message,data);inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=synthetic_id,direction="inbound",message_type="button",body=display_body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
         db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0
-        try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
-        except Exception:db.rollback();logger.exception("Telegram callback flow execution failed conversation=%s data=%r",conversation.id,data)
+        # The flow runtime needs the technical callback token for routing, while Live Chat should keep the friendly label.
+        inbound.body=data
+        try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);inbound.body=display_body;db.commit()
+        except Exception:
+            db.rollback();logger.exception("Telegram callback flow execution failed conversation=%s data=%r",conversation.id,data)
+            try:
+                saved=db.get(TelegramMessage,inbound.id)
+                if saved:saved.body=display_body;db.commit()
+            except Exception:db.rollback()
         return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed,"callback":True}
     message=payload.get("message")
     if not message:return {"ok":True,"processed":0,"ignored":True}
