@@ -59,7 +59,9 @@ async def _http(db,c,cfg):
     return bool(result.get('success'))
 async def _interactive(db,c,n,by,out,cfg):
     text=_render(db,c,cfg.get('text') or 'Choose an option').strip();ln=_choices(by,out,n.id,'list_messages');bn=_choices(by,out,n.id,'buttons');buttons=[]
-    if ln:
+    if str(cfg.get('row_generation') or 'static').lower()=='dynamic':
+        for row in build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,cfg,10):buttons.append({'label':row['label'],'id':n.id,'value':f'wfdyn:{n.id}:{row["index"]}'})
+    elif ln:
         template=next((x for x in ln if str(_json(x.config_json).get('row_generation') or 'static').lower()=='dynamic'),None)
         if template:
             tc=_json(template.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,tc,10)
@@ -133,11 +135,16 @@ async def _resume(db,c,i,s):
     if s.waiting_for=='button' and _is(w,FlowNodeType.INTERACTIVE):
         body=str(i.body or '').strip();dm=re.fullmatch(r'wfdyn:(\d+):(\d+)',body)
         if dm:
-            template=by.get(int(dm.group(1)));valid={x.id for x in _choices(by,out,w.id,'list_messages')}
-            if not template or template.id not in valid:return True
-            cfg=_json(template.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,cfg,10);idx=int(dm.group(2))
+            owner=by.get(int(dm.group(1)));idx=int(dm.group(2))
+            if owner and owner.id==w.id and _is(owner,FlowNodeType.INTERACTIVE):
+                cfg=_json(owner.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,cfg,10)
+                if idx>=len(rows):return True
+                save_dynamic_selection(db,'telegram',c.workspace_id,c.contact_id,cfg,rows[idx]);return await _run_from(db,f,c,i,s,_next(by,out,w.id),by,out)
+            valid={x.id for x in _choices(by,out,w.id,'list_messages')}
+            if not owner or owner.id not in valid:return True
+            cfg=_json(owner.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,cfg,10)
             if idx>=len(rows):return True
-            save_dynamic_selection(db,'telegram',c.workspace_id,c.contact_id,cfg,rows[idx]);return await _run_from(db,f,c,i,s,template,by,out)
+            save_dynamic_selection(db,'telegram',c.workspace_id,c.contact_id,cfg,rows[idx]);return await _run_from(db,f,c,i,s,owner,by,out)
         m=re.fullmatch(r'wfbtn:(\d+)',body);b=by.get(int(m.group(1))) if m else None;valid={x.id for x in _choices(by,out,w.id,'buttons')+_choices(by,out,w.id,'list_messages')}
         if not b or b.id not in valid:return True
         return await _run_from(db,f,c,i,s,b,by,out)
