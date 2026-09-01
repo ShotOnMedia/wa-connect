@@ -8,7 +8,7 @@ async function load(){loading.value=true;error.value='';try{fields.value=await a
 function create(){creating.value=true;editing.value=null;form.value=blank()}
 function edit(f){creating.value=false;editing.value=f;form.value={...f,options:[...(f.options||[])]}}
 function close(){creating.value=false;editing.value=null}
-async function save(){try{const payload={...form.value,options:form.value.field_type==='select'?form.value.options:[]};if(creating.value)await api.createContactField(payload);else await api.updateContactField(editing.value.id,payload);close();await load()}catch(e){error.value=e.message}}
+async function save(){try{let payload;if(editing.value?.system)payload={label:form.value.label,sort_order:form.value.sort_order};else payload={label:form.value.label,key:form.value.key,field_type:form.value.field_type,required:form.value.required,active:form.value.active,sort_order:form.value.sort_order,options:form.value.field_type==='select'?form.value.options:[]};if(creating.value)await api.createContactField(payload);else await api.updateContactField(editing.value.id,payload);close();await load()}catch(e){error.value=e.message}}
 async function remove(f){if(f.system||!confirm(`Delete custom field “${f.label}”? Existing values will also be removed.`))return;try{await api.deleteContactField(f.id);await load()}catch(e){error.value=e.message}}
 function addOption(){form.value.options.push('')}
 function removeOption(i){form.value.options.splice(i,1)}
