@@ -1,0 +1,6 @@
+<script setup>
+import VariableInsert from './VariableInsert.vue'
+defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]}})
+</script>
+<template><div class="editor"><div class="info"><b>Request the subscriber's location</b><span>WhatsApp and Telegram will show their native Share Location control. The flow waits until a location is received, then continues.</span></div><label>Request message<textarea v-model="draft.text" rows="4" placeholder="Please share your current location."></textarea><VariableInsert :fields="fields" @insert="token=>draft.text=(draft.text||'')+token"/></label><label>Telegram button text<input v-model="draft.location_button_text" placeholder="Share location"></label></div></template>
+<style scoped>.editor{display:grid;gap:13px}.info{padding:12px;border:1px solid #cfe8dc;background:#f2faf6;border-radius:9px}.info b,.info span{display:block}.info span{font-size:11px;color:#71847b;margin-top:4px;line-height:1.45}.editor label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700}.editor input,.editor textarea{border:1px solid #d7e1dd;border-radius:8px;padding:10px;font:inherit}</style>
