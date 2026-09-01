@@ -24,15 +24,16 @@ def latest_open_run(flow_id:int, channel:str, conversation_id:int)->int|None:
         return int(run.id) if run else None
 
 
-def event(run_id:int|None, status:str, node_id:int|None=None, node_type:str|None=None, message:str|None=None, run_status:str|None=None):
+def event(run_id:int|None, event_status:str, node_id:int|None=None, node_type:str|None=None, message:str|None=None, run_status:str|None=None, status:str|None=None):
     if not run_id:return
+    event_state=status or event_status
     with SessionLocal() as db:
         run=db.get(FlowRun,run_id)
         if not run:return
         run.current_node_id=node_id if node_id is not None else run.current_node_id
         run.updated_at=utcnow()
         if run_status:run.status=run_status
-        db.add(FlowRunEvent(run_id=run.id,node_id=node_id,node_type=node_type,status=status,message=(message or None),created_at=utcnow()))
+        db.add(FlowRunEvent(run_id=run.id,node_id=node_id,node_type=node_type,status=event_state,message=(message or None),created_at=utcnow()))
         db.commit()
 
 
