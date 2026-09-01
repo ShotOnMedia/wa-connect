@@ -42,8 +42,24 @@ def _render_value(value: Any, render: Callable[[str], str]):
 
 
 def extract_path(data: Any, path: str):
+    path = str(path or "").strip()
+    # `$` is the canonical whole-response selector. Empty is accepted here as
+    # a convenience for callers, while the mapping UI stores `$` explicitly.
+    if path in {"", "$"}:
+        return data
+    if path.startswith("$."):
+        path = path[2:]
+    elif path.startswith("$["):
+        path = path[1:]
     current = data
-    for part in [p for p in re.split(r"\.(?![^\[]*\])", str(path or "").strip()) if p]:
+    for part in [p for p in re.split(r"\.(?![^\[]*\])", path) if p]:
+        # Support root/list indexes such as [0] as well as products[0].
+        index_only = re.fullmatch(r"\[(\d+)\]", part)
+        if index_only:
+            if not isinstance(current, list) or int(index_only.group(1)) >= len(current):
+                return None
+            current = current[int(index_only.group(1))]
+            continue
         match = re.fullmatch(r"([^\[]+)(?:\[(\d+)\])?", part)
         if not match:
             return None
@@ -62,7 +78,9 @@ def extract_path(data: Any, path: str):
 
 
 def flatten_paths(data: Any, prefix: str = "", limit: int = 250):
-    rows = []
+    # Always expose the complete JSON document as a selectable response path.
+    root_preview = json.dumps(data, ensure_ascii=False) if isinstance(data, (dict, list)) else ("null" if data is None else str(data))
+    rows = [{"path": "$", "preview": root_preview[:180], "kind": "root"}]
 
     def walk(value, path):
         if len(rows) >= limit:
@@ -76,13 +94,13 @@ def flatten_paths(data: Any, prefix: str = "", limit: int = 250):
             if not value and path:
                 rows.append({"path": path, "preview": "[]"})
             for i, child in enumerate(value[:20]):
-                walk(child, f"{path}[{i}]")
+                walk(child, f"{path}[{i}]" if path else f"[{i}]")
         elif path:
             preview = "null" if value is None else str(value)
             rows.append({"path": path, "preview": preview[:180]})
 
     walk(data, prefix)
-    return rows
+    return rows[:limit]
 
 
 def _ensure_field(db: Session, workspace_id: int, key: str):
