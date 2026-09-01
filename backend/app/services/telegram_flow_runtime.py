@@ -4,9 +4,12 @@ from sqlalchemy import func,select
 from sqlalchemy.orm import Session
 from app.flow_channel_models import FlowChannelTarget,TelegramFlowSession
 from app.flow_models import Flow,FlowEdge,FlowNode,FlowNodeType,FlowStatus,FlowTriggerType
+from app.http_api_models import HttpApi
 from app.models import ContactFieldDefinition
+from app.services.dynamic_lists import build_dynamic_rows,save_dynamic_selection
 from app.services.flow_delay import schedule_delay
 from app.services.flow_tracking import complete as track_complete,event as track_event,fail as track_fail,latest_open_run,start_run
+from app.services.http_api_executor import execute_http_api
 from app.services.telegram import TelegramError,request_location,send_buttons,send_location,send_media,send_product_card,send_text
 from app.services.telegram_flow_actions import assign_user,change_tag,condition_result,set_field,set_status
 from app.services.user_input import active_submission,campaign_for_submission,complete_submission,record_answer,start_submission
@@ -47,12 +50,28 @@ async def _request_location(db,c,cfg):
     text=_render(db,c,cfg.get('text') or 'Please share your current location.').strip();button=_render(db,c,cfg.get('location_button_text') or 'Share location').strip();r=await request_location(c.bot.access_token,c.chat_id,text,button);_store(db,c,r,'location_request',text)
 async def _commerce(db,c,cfg):
     name=_render(db,c,cfg.get('product_name') or 'Product').strip() or 'Product';r=await send_product_card(c.bot.access_token,c.chat_id,name,_render(db,c,cfg.get('product_description')).strip(),_render(db,c,cfg.get('product_price')).strip(),_render(db,c,cfg.get('product_currency')).strip(),_render(db,c,cfg.get('product_image')).strip(),_render(db,c,cfg.get('product_url')).strip(),_render(db,c,cfg.get('product_button_text') or 'View product').strip());_store(db,c,r,'commerce',r.get('caption') or r.get('text') or name)
+async def _http(db,c,cfg):
+    aid=cfg.get('http_api_id')
+    if not aid:return False
+    api=db.get(HttpApi,int(aid))
+    if not api or not api.active:return False
+    result=await execute_http_api(db,api,lambda v:_render(db,c,v),channel='telegram',workspace_id=c.workspace_id,contact_id=c.contact_id,apply_mappings=True)
+    return bool(result.get('success'))
 async def _interactive(db,c,n,by,out,cfg):
-    text=_render(db,c,cfg.get('text') or 'Choose an option').strip();ln=_choices(by,out,n.id,'list_messages');bn=_choices(by,out,n.id,'buttons');nodes=ln[:10] if ln else bn;buttons=[]
-    for x in nodes:
-        q=_json(x.config_json);item={'label':_render(db,c,q.get('label') or x.title or 'Option').strip(),'id':x.id,'value':f'wfbtn:{x.id}'}
-        if not ln and q.get('action')=='url' and q.get('action_value'):item['url']=_render(db,c,q['action_value']).strip()
-        buttons.append(item)
+    text=_render(db,c,cfg.get('text') or 'Choose an option').strip();ln=_choices(by,out,n.id,'list_messages');bn=_choices(by,out,n.id,'buttons');buttons=[]
+    if ln:
+        template=next((x for x in ln if str(_json(x.config_json).get('row_generation') or 'static').lower()=='dynamic'),None)
+        if template:
+            tc=_json(template.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,tc,10)
+            for row in rows:buttons.append({'label':row['label'],'id':template.id,'value':f'wfdyn:{template.id}:{row["index"]}'})
+        else:
+            for x in ln[:10]:
+                q=_json(x.config_json);buttons.append({'label':_render(db,c,q.get('label') or x.title or 'Option').strip(),'id':x.id,'value':f'wfbtn:{x.id}'})
+    else:
+        for x in bn:
+            q=_json(x.config_json);item={'label':_render(db,c,q.get('label') or x.title or 'Option').strip(),'id':x.id,'value':f'wfbtn:{x.id}'}
+            if q.get('action')=='url' and q.get('action_value'):item['url']=_render(db,c,q['action_value']).strip()
+            buttons.append(item)
     if not buttons:await _send(db,c,text);return False
     r=await send_buttons(c.bot.access_token,c.chat_id,text,buttons);_store(db,c,r,'interactive',text);return any(not b.get('url') for b in buttons)
 def _validate(cfg,i):
@@ -79,6 +98,7 @@ async def _run_from(db,f,c,i,s,n,by,out):
         if k==FlowNodeType.REQUEST_LOCATION.value:await _request_location(db,c,cfg);s.status='waiting';s.waiting_for='location';db.flush();return True
         if k==FlowNodeType.USER_INPUT_FLOW.value:start_submission(db,f,c,n,'telegram',cfg);n=_next(by,out,n.id);continue
         if k==FlowNodeType.COMMERCE.value:await _commerce(db,c,cfg);n=_next(by,out,n.id);continue
+        if k==FlowNodeType.HTTP_REQUEST.value:n=_next(by,out,n.id,'success' if await _http(db,c,cfg) else 'error');continue
         if k==FlowNodeType.QUESTION.value:await _send(db,c,cfg.get('text'));s.status='waiting';s.waiting_for='reply';db.flush();return True
         if k==FlowNodeType.INTERACTIVE.value:
             ec=_next(by,out,n.id,'ecommerce')
@@ -111,7 +131,14 @@ async def _resume(db,c,i,s):
         if str(i.message_type or '').lower()!='location':await _send(db,c,'Please use the Share location button to send your current location.');return True
         return await _run_from(db,f,c,i,s,_next(by,out,w.id),by,out)
     if s.waiting_for=='button' and _is(w,FlowNodeType.INTERACTIVE):
-        m=re.fullmatch(r'wfbtn:(\d+)',str(i.body or '').strip());b=by.get(int(m.group(1))) if m else None;valid={x.id for x in _choices(by,out,w.id,'buttons')+_choices(by,out,w.id,'list_messages')}
+        body=str(i.body or '').strip();dm=re.fullmatch(r'wfdyn:(\d+):(\d+)',body)
+        if dm:
+            template=by.get(int(dm.group(1)));valid={x.id for x in _choices(by,out,w.id,'list_messages')}
+            if not template or template.id not in valid:return True
+            cfg=_json(template.config_json);rows=build_dynamic_rows(db,'telegram',c.workspace_id,c.contact_id,cfg,10);idx=int(dm.group(2))
+            if idx>=len(rows):return True
+            save_dynamic_selection(db,'telegram',c.workspace_id,c.contact_id,cfg,rows[idx]);return await _run_from(db,f,c,i,s,template,by,out)
+        m=re.fullmatch(r'wfbtn:(\d+)',body);b=by.get(int(m.group(1))) if m else None;valid={x.id for x in _choices(by,out,w.id,'buttons')+_choices(by,out,w.id,'list_messages')}
         if not b or b.id not in valid:return True
         return await _run_from(db,f,c,i,s,b,by,out)
     if not _is(w,FlowNodeType.QUESTION):return False
