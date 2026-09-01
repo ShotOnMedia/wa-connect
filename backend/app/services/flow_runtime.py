@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowSession, FlowSessionStatus, FlowStatus, FlowTriggerType
 from app.models import ContactFieldDefinition, ContactFieldValue, ContactTag, ContactTagLink, Conversation, ConversationStatus, Message, MessageDirection, MessageStatus, User
 from app.services.flow_delay import schedule_delay
+from app.services.flow_tracking import complete as track_complete, event as track_event, fail as track_fail, latest_open_run, start_run
 from app.services.flow_variables import render_whatsapp
 from app.services.service_window import service_window_open
 from app.services.whatsapp import WhatsAppError, send_list_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
@@ -109,8 +110,7 @@ def _choice_nodes(by_id,out,interactive_id,handle):
 def _all_choices(by_id,out,interactive_id):return _choice_nodes(by_id,out,interactive_id,"buttons")+_choice_nodes(by_id,out,interactive_id,"list_messages")
 async def _send_interactive(db,conversation,node,by_id,out,config):
     if not _can_send(conversation):return False
-    text=render_whatsapp(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons")
-    phone=conversation.phone_number
+    text=render_whatsapp(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     if list_nodes:
         rows=[]
@@ -192,9 +192,7 @@ async def _run(db,flow,conversation,session,start=None):
             elif action=="start_flow":logger.info("Button start_flow action is not implemented yet")
             current=_next(by_id,out,current.id);continue
         if kind==FlowNodeType.DELAY:
-            resume=_next(by_id,out,current.id)
-            schedule_delay(db,"whatsapp",flow.id,conversation.id,current.id,resume.id if resume else None,cfg)
-            session.status=FlowSessionStatus.WAITING;session.waiting_for="delay";session.updated_at=datetime.utcnow();db.flush();return True
+            resume=_next(by_id,out,current.id);schedule_delay(db,"whatsapp",flow.id,conversation.id,current.id,resume.id if resume else None,cfg);session.status=FlowSessionStatus.WAITING;session.waiting_for="delay";session.updated_at=datetime.utcnow();db.flush();return True
         if kind!=FlowNodeType.TRIGGER:
             await _action(db,conversation,kind.value,cfg)
             if kind==FlowNodeType.QUESTION:session.status=FlowSessionStatus.WAITING;session.waiting_for="reply";db.flush();return True
@@ -220,26 +218,36 @@ async def _resume(db,conversation,inbound,session):
     session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
     if not next_node:_finish(session);return True
     return await _run(db,flow,conversation,session,next_node)
+def _track_state(run_id,session):
+    if session.status==FlowSessionStatus.COMPLETED:track_complete(run_id);return
+    if session.status==FlowSessionStatus.WAITING:
+        state="delayed" if session.waiting_for=="delay" else "waiting";track_event(run_id,state,node_id=session.current_node_id,status=state,message=f"Waiting for {session.waiting_for}",run_status=state)
 async def resume_whatsapp_delay(db:Session,job)->bool:
     conversation=db.get(Conversation,job.conversation_id);flow=db.get(Flow,job.flow_id);session=_session(db,job.conversation_id)
     if not conversation or not flow or flow.status!=FlowStatus.ACTIVE or not session or session.flow_id!=flow.id:return False
     if session.waiting_for!="delay" or session.current_node_id!=job.delay_node_id:return False
+    run_id=latest_open_run(flow.id,"whatsapp",conversation.id);track_event(run_id,"resumed",node_id=job.delay_node_id,node_type="delay",message="Delay elapsed",run_status="running")
     session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;session.updated_at=datetime.utcnow()
-    if not job.resume_node_id:_finish(session);db.flush();return True
-    node=db.get(FlowNode,job.resume_node_id)
-    if not node or node.flow_id!=flow.id:_finish(session,FlowSessionStatus.FAILED);db.flush();return False
-    return await _run(db,flow,conversation,session,node)
+    try:
+        if not job.resume_node_id:_finish(session);db.flush();_track_state(run_id,session);return True
+        node=db.get(FlowNode,job.resume_node_id)
+        if not node or node.flow_id!=flow.id:_finish(session,FlowSessionStatus.FAILED);db.flush();raise RuntimeError("Delay resume node no longer exists")
+        result=await _run(db,flow,conversation,session,node);_track_state(run_id,session);return result
+    except Exception as exc:track_fail(run_id,exc,session.current_node_id);raise
 async def run_flows_for_inbound(db:Session,conversation:Conversation,inbound:Message)->int:
     existing=_session(db,conversation.id)
     if existing and existing.status==FlowSessionStatus.WAITING:
+        run_id=latest_open_run(existing.flow_id,"whatsapp",conversation.id)
         try:
             if existing.waiting_for=="delay":return 0
-            if await _resume(db,conversation,inbound,existing):db.commit();return 1
-        except (WhatsAppError,RuntimeError,ValueError):db.rollback();raise
+            track_event(run_id,"resumed",node_id=existing.current_node_id,message=f"Received {existing.waiting_for} reply",run_status="running")
+            if await _resume(db,conversation,inbound,existing):db.commit();_track_state(run_id,existing);return 1
+        except (WhatsAppError,RuntimeError,ValueError) as exc:db.rollback();track_fail(run_id,exc,existing.current_node_id);raise
     executed=0
     for flow in _matching_flows(db,conversation,inbound):
+        run_id=None
         try:
-            session=_start_session(db,conversation,flow,inbound)
-            if await _run(db,flow,conversation,session):db.commit();executed+=1
-        except (WhatsAppError,RuntimeError,ValueError):db.rollback();raise
+            session=_start_session(db,conversation,flow,inbound);run_id=start_run(flow.id,flow.workspace_id,"whatsapp",conversation.id,conversation.contact_id,session.current_node_id)
+            if await _run(db,flow,conversation,session):db.commit();_track_state(run_id,session);executed+=1
+        except (WhatsAppError,RuntimeError,ValueError) as exc:db.rollback();track_fail(run_id,exc,session.current_node_id if 'session' in locals() else None);raise
     return executed
