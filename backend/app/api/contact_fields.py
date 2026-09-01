@@ -10,7 +10,7 @@ from app.core.security import require_admin
 from app.models import Contact, ContactFieldDefinition, ContactFieldType, ContactFieldValue, User, Workspace
 from app.schemas import ContactCustomFieldOut, ContactFieldDefinitionCreate, ContactFieldDefinitionOut, ContactFieldDefinitionUpdate, ContactFieldValueUpdate
 from app.services.system_fields import SYSTEM_FIELD_KEYS, ensure_system_fields, ensure_system_fields_all_workspaces, sync_telegram_system_fields, sync_whatsapp_system_fields
-from app.telegram_models import TelegramContact
+from app.telegram_models import TelegramContact, TelegramContactFieldValue
 
 router = APIRouter(tags=["contact-fields"])
 
@@ -24,6 +24,10 @@ def _options(raw: str | None) -> list[str]:
 
 def _definition_out(field:ContactFieldDefinition)->ContactFieldDefinitionOut:
     return ContactFieldDefinitionOut(id=field.id,key=field.key,label=field.label,field_type=field.field_type,options=_options(field.options_json),required=field.required,active=field.active,sort_order=field.sort_order)
+
+
+def _field_payload(field,value):
+    return {**_definition_out(field).model_dump(mode="json"),"value":value,"system":field.key in SYSTEM_FIELD_KEYS,"variable":f"%{field.key}%"}
 
 
 def _workspace_ids(db:Session)->list[int]:
@@ -132,3 +136,32 @@ def set_contact_custom_field(contact_id:int,field_id:int,payload:ContactFieldVal
     elif existing:existing.value_text=value_text;existing.updated_at=datetime.utcnow()
     else:db.add(ContactFieldValue(contact_id=contact_id,field_id=field_id,value_text=value_text))
     contact.updated_at=datetime.utcnow();db.commit();return ContactCustomFieldOut(**_definition_out(field).model_dump(),value=value_text)
+
+
+@router.get("/telegram/contacts/{contact_id}/custom-fields")
+def get_telegram_contact_custom_fields(contact_id:int,db:Session=Depends(get_db)):
+    contact=db.get(TelegramContact,contact_id)
+    if not contact:raise HTTPException(status_code=404,detail="Telegram contact not found")
+    ensure_system_fields(db,contact.workspace_id);sync_telegram_system_fields(db,contact);db.commit()
+    rows=db.execute(select(ContactFieldDefinition,TelegramContactFieldValue.value_text).outerjoin(TelegramContactFieldValue,(TelegramContactFieldValue.field_id==ContactFieldDefinition.id)&(TelegramContactFieldValue.contact_id==contact_id)).where(ContactFieldDefinition.workspace_id==contact.workspace_id,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order.asc(),ContactFieldDefinition.label.asc())).all()
+    return [_field_payload(field,value) for field,value in rows]
+
+
+@router.put("/telegram/contacts/{contact_id}/custom-fields/{field_id}")
+def set_telegram_contact_custom_field(contact_id:int,field_id:int,payload:ContactFieldValueUpdate,db:Session=Depends(get_db)):
+    contact=db.get(TelegramContact,contact_id);field=db.get(ContactFieldDefinition,field_id)
+    if not contact or not field or field.workspace_id!=contact.workspace_id or not field.active:raise HTTPException(status_code=404,detail="Telegram contact or custom field not found")
+    if field.key in SYSTEM_FIELD_KEYS:raise HTTPException(status_code=422,detail="System fields are maintained automatically")
+    value=payload.value
+    if isinstance(value,bool):value_text="true" if value else "false"
+    elif value is None:value_text=None
+    else:value_text=str(value).strip()
+    if field.required and not value_text:raise HTTPException(status_code=422,detail=f"{field.label} is required")
+    if field.field_type==ContactFieldType.SELECT and value_text and value_text not in _options(field.options_json):raise HTTPException(status_code=422,detail="Value is not one of the configured options")
+    if field.field_type==ContactFieldType.CHECKBOX and value_text not in {None,"true","false"}:raise HTTPException(status_code=422,detail="Checkbox value must be true or false")
+    row=db.scalar(select(TelegramContactFieldValue).where(TelegramContactFieldValue.contact_id==contact_id,TelegramContactFieldValue.field_id==field_id))
+    if not value_text and not field.required:
+        if row:db.delete(row)
+    elif row:row.value_text=value_text;row.updated_at=datetime.utcnow()
+    else:db.add(TelegramContactFieldValue(contact_id=contact_id,field_id=field_id,value_text=value_text))
+    contact.updated_at=datetime.utcnow();db.commit();return _field_payload(field,value_text)
