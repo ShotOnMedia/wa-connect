@@ -11,6 +11,8 @@ from app import models  # noqa: F401,E402
 from app import flow_models  # noqa: F401,E402
 from app import telegram_models  # noqa: F401,E402
 from app import flow_channel_models  # noqa: F401,E402
+from app import flow_delay_models  # noqa: F401,E402
+from app import flow_run_models  # noqa: F401,E402
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
