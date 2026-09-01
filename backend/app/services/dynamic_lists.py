@@ -16,21 +16,37 @@ def _field_value(db: Session, channel: str, contact_id: int, field_id: int):
     return row.value_text if row else None
 
 
-def _field(db: Session, workspace_id: int, field_id: int | str | None):
+def _field(db: Session, workspace_id: int, field_id: int | str | None = None, field_key: str | None = None):
+    """Resolve a field by stable key first, then fall back to its database id."""
+    key = str(field_key or "").strip()
+    if key:
+        found = db.scalar(select(ContactFieldDefinition).where(
+            ContactFieldDefinition.workspace_id == workspace_id,
+            ContactFieldDefinition.key == key,
+            ContactFieldDefinition.active.is_(True),
+        ))
+        if found:
+            return found
     if not field_id:
         return None
     try:
         fid = int(field_id)
     except (TypeError, ValueError):
         return None
-    return db.scalar(select(ContactFieldDefinition).where(ContactFieldDefinition.id == fid, ContactFieldDefinition.workspace_id == workspace_id, ContactFieldDefinition.active.is_(True)))
+    return db.scalar(select(ContactFieldDefinition).where(
+        ContactFieldDefinition.id == fid,
+        ContactFieldDefinition.workspace_id == workspace_id,
+        ContactFieldDefinition.active.is_(True),
+    ))
 
 
 def _path(value: Any, path: str):
     current = value
     path = str(path or "").strip()
-    if not path:
+    if not path or path == "$":
         return current
+    if path.startswith("$."):
+        path = path[2:]
     for part in [p for p in re.split(r"\.(?![^\[]*\])", path) if p]:
         match = re.fullmatch(r"([^\[]+)(?:\[(\d+)\])?", part)
         if not match:
@@ -78,7 +94,7 @@ def _format(template: str, item: Any):
 def build_dynamic_rows(db: Session, channel: str, workspace_id: int, contact_id: int, config: dict, limit: int = 10):
     if str(config.get("row_generation") or "static").lower() != "dynamic":
         return []
-    source = _field(db, workspace_id, config.get("dynamic_source_field_id"))
+    source = _field(db, workspace_id, config.get("dynamic_source_field_id"), config.get("dynamic_source_field_key"))
     if not source:
         return []
     raw = _field_value(db, channel, contact_id, source.id)
@@ -100,18 +116,12 @@ def build_dynamic_rows(db: Session, channel: str, workspace_id: int, contact_id:
         if selected is None:
             selected = title
         description = _format(config.get("dynamic_description") or "", item)
-        rows.append({
-            "index": index,
-            "label": str(title)[:200],
-            "description": description[:200],
-            "selected": selected,
-            "item": item,
-        })
+        rows.append({"index": index,"label": str(title)[:200],"description": description[:200],"selected": selected,"item": item})
     return rows
 
 
 def save_dynamic_selection(db: Session, channel: str, workspace_id: int, contact_id: int, config: dict, row: dict):
-    target = _field(db, workspace_id, config.get("dynamic_save_field_id"))
+    target = _field(db, workspace_id, config.get("dynamic_save_field_id"), config.get("dynamic_save_field_key"))
     if not target:
         return False
     value = row.get("item") if config.get("dynamic_save_entire_object") else row.get("selected")
@@ -128,7 +138,6 @@ def save_dynamic_selection(db: Session, channel: str, workspace_id: int, contact
 
 
 def dynamic_selection_value(prefix: str, interactive_node_id: int, index: int) -> str:
-    """Stable callback/reply id for dynamic rows owned directly by an Interactive node."""
     return f"{prefix}:{interactive_node_id}:{index}"
 
 
