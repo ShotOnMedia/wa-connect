@@ -2,7 +2,7 @@ import json
 import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_admin, require_user
 from app.models import Workspace
-from app.services.telegram import TelegramError, send_text, set_webhook, verify_bot, webhook_info
+from app.services.telegram import TelegramError, download_file, get_file, send_text, set_webhook, verify_bot, webhook_info
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
@@ -32,11 +32,24 @@ class TelegramSendIn(BaseModel): text:str=Field(min_length=1,max_length=4096)
 
 def bot_out(bot,workspace): return TelegramBotOut(id=bot.id,workspace_id=workspace.id,workspace_name=workspace.name,workspace_slug=workspace.slug,bot_id=bot.bot_id,username=bot.username,first_name=bot.first_name,active=bot.active,webhook_url=bot.webhook_url,has_token=bool(bot.access_token),created_at=bot.created_at)
 def contact_out(c): return {"id":c.id,"telegram_user_id":c.telegram_user_id,"username":c.username,"first_name":c.first_name,"last_name":c.last_name,"name":" ".join(filter(None,[c.first_name,c.last_name])) or c.username or str(c.telegram_user_id),"language_code":c.language_code,"is_bot":False,"created_at":c.created_at,"updated_at":c.updated_at}
-def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
+def _media_meta(m):
+    if m.message_type not in {"photo","video","voice","audio","document","sticker"}:return None
+    try:p=json.loads(m.payload_json or "{}")
+    except (TypeError,ValueError):return None
+    msg=p.get("message") or {}
+    item=None
+    if m.message_type=="photo":
+        photos=msg.get("photo") or [];item=photos[-1] if photos else None
+    else:item=msg.get(m.message_type)
+    if not isinstance(item,dict):return None
+    file_id=item.get("file_id")
+    if not file_id:return None
+    return {"file_id":file_id,"file_name":item.get("file_name"),"mime_type":item.get("mime_type"),"file_size":item.get("file_size"),"width":item.get("width"),"height":item.get("height"),"duration":item.get("duration"),"emoji":item.get("emoji"),"url":f"/telegram/messages/{m.id}/media"}
+def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"media":_media_meta(m),"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
 def conversation_out(c):
     last=c.messages[-1] if c.messages else None
     unread=bool(c.last_message_at and (not c.last_read_at or c.last_read_at<c.last_message_at))
-    return {"id":c.id,"chat_id":c.chat_id,"chat_type":c.chat_type,"status":c.status,"assigned_user_id":c.assigned_user_id,"last_message_at":c.last_message_at,"last_read_at":c.last_read_at,"unread_count":1 if unread else 0,"last_message_body":last.body if last else None,"last_message_direction":last.direction if last else None,"contact":contact_out(c.contact),"bot":{"id":c.bot.id,"bot_id":c.bot.bot_id,"username":c.bot.username,"first_name":c.bot.first_name}}
+    return {"id":c.id,"chat_id":c.chat_id,"chat_type":c.chat_type,"status":c.status,"assigned_user_id":c.assigned_user_id,"last_message_at":c.last_message_at,"last_read_at":c.last_read_at,"unread_count":1 if unread else 0,"last_message_body":last.body if last else None,"last_message_type":last.message_type if last else None,"last_message_direction":last.direction if last else None,"contact":contact_out(c.contact),"bot":{"id":c.bot.id,"bot_id":c.bot.bot_id,"username":c.bot.username,"first_name":c.bot.first_name}}
 
 @router.post("/verify",dependencies=[Depends(require_admin)])
 async def verify_telegram_bot(request:TelegramVerifyIn):
@@ -100,6 +113,20 @@ def telegram_messages(conversation_id:int,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id));
     if not c:raise HTTPException(status_code=404,detail="Telegram conversation not found")
     return [message_out(m) for m in db.scalars(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation_id).order_by(TelegramMessage.created_at.asc())).all()]
+@router.get("/messages/{message_id}/media",dependencies=[Depends(require_user)])
+async def telegram_message_media(message_id:int,db:Session=Depends(get_db)):
+    m=db.scalar(select(TelegramMessage).options(joinedload(TelegramMessage.conversation).joinedload(TelegramConversation.bot)).where(TelegramMessage.id==message_id))
+    if not m:raise HTTPException(status_code=404,detail="Telegram message not found")
+    media=_media_meta(m)
+    if not media:raise HTTPException(status_code=404,detail="This message has no retrievable Telegram media")
+    try:
+        info=await get_file(m.conversation.bot.access_token,media["file_id"]);file_path=(info or {}).get("file_path")
+        if not file_path:raise TelegramError("Telegram did not return a file path")
+        content,content_type=await download_file(m.conversation.bot.access_token,file_path)
+    except TelegramError as exc:raise HTTPException(status_code=502,detail=f"Telegram media retrieval failed: {exc}") from exc
+    headers={"Cache-Control":"private, max-age=300"}
+    if media.get("file_name"):headers["Content-Disposition"]=f'inline; filename="{str(media["file_name"]).replace(chr(34),"")}"'
+    return Response(content=content,media_type=media.get("mime_type") or content_type,headers=headers)
 @router.post("/conversations/{conversation_id}/read",dependencies=[Depends(require_user)])
 def telegram_mark_read(conversation_id:int,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id));
