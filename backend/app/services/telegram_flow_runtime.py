@@ -8,6 +8,7 @@ from app.flow_channel_models import FlowChannelTarget, TelegramFlowSession
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowStatus, FlowTriggerType
 from app.models import ContactFieldDefinition
 from app.services.flow_delay import schedule_delay
+from app.services.flow_tracking import complete as track_complete, event as track_event, fail as track_fail, latest_open_run, start_run
 from app.services.telegram import TelegramError, send_buttons, send_media, send_product_card, send_text
 from app.services.telegram_flow_actions import assign_user, change_tag, condition_result, set_field, set_status
 from app.telegram_models import TelegramContactFieldValue, TelegramConversation, TelegramMessage
@@ -54,11 +55,9 @@ async def _send_media(db,conversation,kind,config):
     if not media:logger.warning("Telegram %s flow block has no media URL/file_id",kind);return
     result=await send_media(conversation.bot.access_token,conversation.chat_id,kind,media,caption or None);_store_outbound(db,conversation,result,kind,result.get("caption") or caption or None)
 async def _send_commerce(db,conversation,config):
-    name=_render(db,conversation,config.get("product_name") or "Product").strip() or "Product";description=_render(db,conversation,config.get("product_description") or "").strip();price=_render(db,conversation,config.get("product_price") or "").strip();currency=_render(db,conversation,config.get("product_currency") or "").strip();image=_render(db,conversation,config.get("product_image") or "").strip();url=_render(db,conversation,config.get("product_url") or "").strip();button=_render(db,conversation,config.get("product_button_text") or "View product").strip() or "View product"
-    result=await send_product_card(conversation.bot.access_token,conversation.chat_id,name,description,price,currency,image,url,button);_store_outbound(db,conversation,result,"commerce",result.get("caption") or result.get("text") or name)
+    name=_render(db,conversation,config.get("product_name") or "Product").strip() or "Product";description=_render(db,conversation,config.get("product_description") or "").strip();price=_render(db,conversation,config.get("product_price") or "").strip();currency=_render(db,conversation,config.get("product_currency") or "").strip();image=_render(db,conversation,config.get("product_image") or "").strip();url=_render(db,conversation,config.get("product_url") or "").strip();button=_render(db,conversation,config.get("product_button_text") or "View product").strip() or "View product";result=await send_product_card(conversation.bot.access_token,conversation.chat_id,name,description,price,currency,image,url,button);_store_outbound(db,conversation,result,"commerce",result.get("caption") or result.get("text") or name)
 async def _send_interactive(db,flow,conversation,node,by_id,out,config):
-    text=_render(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");nodes=(list_nodes[:10] if list_nodes else button_nodes)
-    buttons=[]
+    text=_render(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");nodes=(list_nodes[:10] if list_nodes else button_nodes);buttons=[]
     for button_node in nodes:
         cfg=_json(button_node.config_json);action=str(cfg.get("action") or "next");label=_render(db,conversation,cfg.get("label") or button_node.title or "Option").strip();item={"label":label,"id":button_node.id,"value":f"wfbtn:{button_node.id}"}
         if not list_nodes and action=="url" and cfg.get("action_value"):item["url"]=_render(db,conversation,cfg.get("action_value")).strip()
@@ -155,28 +154,40 @@ async def _resume(db,conversation,inbound,session):
     session.status="active";session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
     if not next_node:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return True
     return await _run_from(db,flow,conversation,inbound,session,next_node,by_id,out)
+def _track_state(run_id,session):
+    if session.status=="completed":track_complete(run_id);return
+    if session.status=="waiting":
+        state="delayed" if session.waiting_for=="delay" else "waiting";track_event(run_id,state,node_id=session.current_node_id,status=state,message=f"Waiting for {session.waiting_for}",run_status=state)
 async def resume_telegram_delay(db:Session,job)->bool:
-    conversation=db.get(TelegramConversation,job.conversation_id);flow=db.get(Flow,job.flow_id);session=_session(db,job.conversation_id)
-    target=db.scalar(select(FlowChannelTarget).where(FlowChannelTarget.flow_id==job.flow_id)) if flow else None
+    conversation=db.get(TelegramConversation,job.conversation_id);flow=db.get(Flow,job.flow_id);session=_session(db,job.conversation_id);target=db.scalar(select(FlowChannelTarget).where(FlowChannelTarget.flow_id==job.flow_id)) if flow else None
     if not conversation or not flow or flow.status!=FlowStatus.ACTIVE or not target or target.channel!="telegram" or not session or session.flow_id!=flow.id:return False
     if session.waiting_for!="delay" or session.current_node_id!=job.delay_node_id:return False
+    run_id=latest_open_run(flow.id,"telegram",conversation.id);track_event(run_id,"resumed",node_id=job.delay_node_id,node_type="delay",message="Delay elapsed",run_status="running")
     session.status="active";session.waiting_for=None;session.updated_at=datetime.utcnow()
-    if not job.resume_node_id:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return True
-    nodes,by_id,out=_graph(db,flow.id);node=by_id.get(job.resume_node_id)
-    if not node:session.status="failed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return False
-    return await _run_from(db,flow,conversation,None,session,node,by_id,out)
+    try:
+        if not job.resume_node_id:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();_track_state(run_id,session);return True
+        nodes,by_id,out=_graph(db,flow.id);node=by_id.get(job.resume_node_id)
+        if not node:session.status="failed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();raise RuntimeError("Delay resume node no longer exists")
+        result=await _run_from(db,flow,conversation,None,session,node,by_id,out);_track_state(run_id,session);return result
+    except Exception as exc:track_fail(run_id,exc,session.current_node_id);raise
 async def run_telegram_flows_for_inbound(db:Session,conversation:TelegramConversation,inbound:TelegramMessage)->int:
     existing=_session(db,conversation.id)
     if existing and existing.status=="waiting":
+        run_id=latest_open_run(existing.flow_id,"telegram",conversation.id)
         try:
             if existing.waiting_for=="delay":return 0
-            if await _resume(db,conversation,inbound,existing):return 1
-        except TelegramError:raise
-        except Exception:logger.exception("Telegram flow resume failed flow=%s conversation=%s",existing.flow_id,conversation.id);raise
+            track_event(run_id,"resumed",node_id=existing.current_node_id,message=f"Received {existing.waiting_for} reply",run_status="running")
+            if await _resume(db,conversation,inbound,existing):_track_state(run_id,existing);return 1
+        except TelegramError as exc:track_fail(run_id,exc,existing.current_node_id);raise
+        except Exception as exc:track_fail(run_id,exc,existing.current_node_id);logger.exception("Telegram flow resume failed flow=%s conversation=%s",existing.flow_id,conversation.id);raise
     executed=0
     for flow in _matching_flows(db,conversation,inbound):
+        run_id=None
         try:
-            if await _run_flow(db,flow,conversation,inbound):executed+=1
-        except TelegramError:raise
-        except Exception:logger.exception("Telegram flow execution failed flow=%s conversation=%s",flow.id,conversation.id)
+            run_id=start_run(flow.id,flow.workspace_id,"telegram",conversation.id,conversation.contact_id,None)
+            if await _run_flow(db,flow,conversation,inbound):
+                session=_session(db,conversation.id);_track_state(run_id,session);executed+=1
+        except TelegramError as exc:track_fail(run_id,exc,_session(db,conversation.id).current_node_id if _session(db,conversation.id) else None);raise
+        except Exception as exc:
+            session=_session(db,conversation.id);track_fail(run_id,exc,session.current_node_id if session else None);logger.exception("Telegram flow execution failed flow=%s conversation=%s",flow.id,conversation.id)
     return executed
