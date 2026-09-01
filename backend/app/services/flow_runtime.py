@@ -5,10 +5,13 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowSession, FlowSessionStatus, FlowStatus, FlowTriggerType
+from app.http_api_models import HttpApi
 from app.models import ContactFieldDefinition, ContactFieldValue, ContactTag, ContactTagLink, Conversation, ConversationStatus, Message, MessageDirection, MessageStatus, User
+from app.services.dynamic_lists import build_dynamic_rows, save_dynamic_selection
 from app.services.flow_delay import schedule_delay
 from app.services.flow_tracking import complete as track_complete, event as track_event, fail as track_fail, latest_open_run, start_run
 from app.services.flow_variables import render_whatsapp
+from app.services.http_api_executor import execute_http_api
 from app.services.service_window import service_window_open
 from app.services.user_input import active_submission, campaign_for_submission, complete_submission, record_answer, start_submission
 from app.services.whatsapp import WhatsAppError, request_location_message, send_list_message, send_location_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
@@ -111,6 +114,13 @@ async def _send_commerce(db,conversation,config):
     phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     body=render_whatsapp(db,conversation,config.get("product_body") or config.get("product_description") or "").strip();footer=render_whatsapp(db,conversation,config.get("product_footer") or "").strip();response=await send_product_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,catalog,retailer,body or None,footer or None);_store_outbound(db,conversation,response,"commerce",body or config.get("product_name") or "Product")
+async def _http(db,conversation,config):
+    aid=config.get("http_api_id")
+    if not aid:return False
+    api=db.get(HttpApi,int(aid))
+    if not api or not api.active:return False
+    result=await execute_http_api(db,api,lambda v:render_whatsapp(db,conversation,v),channel="whatsapp",workspace_id=conversation.workspace_id,contact_id=conversation.contact_id,apply_mappings=True)
+    return bool(result.get("success"))
 def _graph(db,flow_id):
     nodes=db.scalars(select(FlowNode).where(FlowNode.flow_id==flow_id)).all();edges=db.scalars(select(FlowEdge).where(FlowEdge.flow_id==flow_id).order_by(FlowEdge.sort_order,FlowEdge.id)).all();by_id={n.id:n for n in nodes};out={}
     for e in edges:out.setdefault(e.source_node_id,[]).append(e)
@@ -130,10 +140,15 @@ async def _send_interactive(db,conversation,node,by_id,out,config):
     text=render_whatsapp(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     if list_nodes:
-        rows=[]
-        for n in list_nodes[:10]:
-            cfg=_json(n.config_json);rows.append({"label":render_whatsapp(db,conversation,cfg.get("label") or n.title or "Option").strip(),"description":render_whatsapp(db,conversation,cfg.get("description") or "").strip(),"value":f"wfbtn:{n.id}"})
-        response=await send_list_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,text,rows,config.get("list_button_text") or "Choose",config.get("list_section_title") or "Options");_store_outbound(db,conversation,response,"interactive",text);return True
+        rows=[];template=next((n for n in list_nodes if str(_json(n.config_json).get("row_generation") or "static").lower()=="dynamic"),None)
+        if template:
+            cfg=_json(template.config_json)
+            for row in build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,10):rows.append({"label":row["label"],"description":row["description"],"value":f'wfdyn:{template.id}:{row["index"]}'})
+        else:
+            for n in list_nodes[:10]:
+                cfg=_json(n.config_json);rows.append({"label":render_whatsapp(db,conversation,cfg.get("label") or n.title or "Option").strip(),"description":render_whatsapp(db,conversation,cfg.get("description") or "").strip(),"value":f"wfbtn:{n.id}"})
+        if rows:
+            response=await send_list_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,text,rows,config.get("list_button_text") or "Choose",config.get("list_section_title") or "Options");_store_outbound(db,conversation,response,"interactive",text);return True
     if button_nodes:
         buttons=[]
         for n in button_nodes[:3]:
@@ -199,6 +214,7 @@ async def _run(db,flow,conversation,session,start=None):
     while current and visited<100:
         visited+=1;session.current_node_id=current.id;session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;db.flush();cfg=_json(current.config_json);kind=current.node_type
         if kind==FlowNodeType.CONDITION:current=_next(by_id,out,current.id,"yes" if _condition(db,conversation,cfg) else "no");continue
+        if kind==FlowNodeType.HTTP_REQUEST:current=_next(by_id,out,current.id,"success" if await _http(db,conversation,cfg) else "error");continue
         if kind==FlowNodeType.INTERACTIVE:
             ecommerce=_next(by_id,out,current.id,"ecommerce")
             if ecommerce and ecommerce.node_type==FlowNodeType.COMMERCE:current=ecommerce;continue
@@ -235,7 +251,14 @@ async def _resume(db,conversation,inbound,session):
         if not next_node:_finish(session);return True
         return await _run(db,flow,conversation,session,next_node)
     if session.waiting_for=="button" and waiting.node_type==FlowNodeType.INTERACTIVE:
-        match=re.fullmatch(r"wfbtn:(\d+)",str(inbound.body or "").strip());button=by_id.get(int(match.group(1))) if match else None;valid={n.id for n in _all_choices(by_id,out,waiting.id)}
+        body=str(inbound.body or "").strip();dm=re.fullmatch(r"wfdyn:(\d+):(\d+)",body)
+        if dm:
+            template=by_id.get(int(dm.group(1)));valid={n.id for n in _choice_nodes(by_id,out,waiting.id,"list_messages")}
+            if not template or template.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
+            cfg=_json(template.config_json);rows=build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,10);idx=int(dm.group(2))
+            if idx>=len(rows):session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
+            save_dynamic_selection(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,rows[idx]);session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;return await _run(db,flow,conversation,session,template)
+        match=re.fullmatch(r"wfbtn:(\d+)",body);button=by_id.get(int(match.group(1))) if match else None;valid={n.id for n in _all_choices(by_id,out,waiting.id)}
         if not button or button.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
         session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;return await _run(db,flow,conversation,session,button)
     if waiting.node_type!=FlowNodeType.QUESTION:_finish(session,FlowSessionStatus.FAILED);return False
