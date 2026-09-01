@@ -1,5 +1,6 @@
 <script setup>
 defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]}})
+const descriptionPlaceholder='{{item.price}} · {{item.description}}'
 </script>
 
 <template>
@@ -33,8 +34,8 @@ defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]
         </label>
       </div>
       <label>Row description
-        <input v-model="draft.dynamic_description" placeholder="{{item.price}} · {{item.description}}">
-        <small>Use {{item.key}} placeholders from each JSON item.</small>
+        <input v-model="draft.dynamic_description" :placeholder="descriptionPlaceholder">
+        <small>Use <code v-text="'{{item.key}}'"></code> placeholders from each JSON item.</small>
       </label>
       <label>Save selection to
         <select v-model="draft.dynamic_save_field_id">
@@ -46,7 +47,7 @@ defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]
       <div class="example">
         <b>Example</b>
         <code>[{"id":123,"product_name":"Widget A","price":"R299"}]</code>
-        <span>Title: <code>product_name</code> · Description: <code>{{'{{item.price}}'}}</code> · Value: <code>id</code></span>
+        <span>Title: <code>product_name</code> · Description: <code v-text="'{{item.price}}'"></code> · Value: <code>id</code></span>
       </div>
     </template>
   </section>
