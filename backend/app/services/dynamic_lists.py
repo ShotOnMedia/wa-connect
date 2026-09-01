@@ -51,7 +51,6 @@ def _items(value: Any):
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
-        # Numeric-key objects are common API output and should behave like arrays.
         if value and all(str(k).isdigit() for k in value):
             return [value[k] for k in sorted(value, key=lambda k: int(k))]
         return list(value.values())
@@ -126,3 +125,13 @@ def save_dynamic_selection(db: Session, channel: str, workspace_id: int, contact
         db.add(model(contact_id=contact_id, field_id=target.id, value_text=text))
     db.flush()
     return True
+
+
+def dynamic_selection_value(prefix: str, interactive_node_id: int, index: int) -> str:
+    """Stable callback/reply id for dynamic rows owned directly by an Interactive node."""
+    return f"{prefix}:{interactive_node_id}:{index}"
+
+
+def parse_dynamic_selection(value: str, prefix: str):
+    match = re.fullmatch(rf"{re.escape(prefix)}:(\d+):(\d+)", str(value or "").strip())
+    return (int(match.group(1)), int(match.group(2))) if match else None
