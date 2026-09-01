@@ -23,6 +23,7 @@ async def download_file(token,file_path):
     if not r.is_success:raise TelegramError(f"Telegram file download failed: HTTP {r.status_code}")
     return r.content,r.headers.get("content-type") or "application/octet-stream"
 async def send_text(token,chat_id,text):return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text})
+async def send_location(token,chat_id,latitude,longitude):return await telegram_api(token,"sendLocation",{"chat_id":chat_id,"latitude":float(latitude),"longitude":float(longitude)})
 async def request_phone_number(token,chat_id,text="Please share your phone number.",button_text="Share phone number"):
     return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text,"reply_markup":{"keyboard":[[{"text":str(button_text or "Share phone number")[:64],"request_contact":True}]],"resize_keyboard":True,"one_time_keyboard":True}})
 async def remove_reply_keyboard(token,chat_id,text):
