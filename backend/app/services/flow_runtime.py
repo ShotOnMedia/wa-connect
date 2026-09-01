@@ -10,7 +10,7 @@ from app.services.flow_delay import schedule_delay
 from app.services.flow_tracking import complete as track_complete, event as track_event, fail as track_fail, latest_open_run, start_run
 from app.services.flow_variables import render_whatsapp
 from app.services.service_window import service_window_open
-from app.services.whatsapp import WhatsAppError, send_list_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
+from app.services.whatsapp import WhatsAppError, send_list_message, send_location_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
 
 logger=logging.getLogger(__name__)
 def _json(value):
@@ -87,6 +87,16 @@ async def _send_media(db,conversation,kind,config):
     phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     response=await send_media_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,kind,media,caption or None,filename or None);_store_outbound(db,conversation,response,"document" if kind=="file" else kind,caption or None)
+async def _send_location(db,conversation,config):
+    if not _can_send(conversation):return
+    latitude=render_whatsapp(db,conversation,config.get("latitude") or "").strip();longitude=render_whatsapp(db,conversation,config.get("longitude") or "").strip()
+    if not latitude or not longitude:raise RuntimeError("Location block requires latitude and longitude")
+    try:lat=float(latitude);lng=float(longitude)
+    except ValueError as exc:raise RuntimeError("Location latitude/longitude must resolve to numeric values") from exc
+    if not -90<=lat<=90 or not -180<=lng<=180:raise RuntimeError("Location coordinates are outside the valid latitude/longitude range")
+    name=render_whatsapp(db,conversation,config.get("location_name") or "").strip();address=render_whatsapp(db,conversation,config.get("address") or "").strip();phone=conversation.phone_number
+    if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
+    response=await send_location_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,lat,lng,name or None,address or None);_store_outbound(db,conversation,response,"location",f"{lat},{lng}")
 async def _send_commerce(db,conversation,config):
     if not _can_send(conversation):return
     catalog=render_whatsapp(db,conversation,config.get("catalog_id") or "").strip();retailer=render_whatsapp(db,conversation,config.get("product_retailer_id") or "").strip()
@@ -127,6 +137,7 @@ async def _action(db,conversation,kind,config):
     contact=conversation.contact
     if kind in {"send_message","question"}:await _send_text(db,conversation,config.get("text"));return
     if kind in {"image","video","audio","file"}:await _send_media(db,conversation,kind,config);return
+    if kind=="location":await _send_location(db,conversation,config);return
     if kind=="commerce":await _send_commerce(db,conversation,config);return
     if kind in {"add_tag","remove_tag"}:
         tid=config.get("tag_id")
