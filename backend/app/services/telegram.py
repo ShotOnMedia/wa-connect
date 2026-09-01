@@ -15,6 +15,10 @@ async def set_webhook(token,webhook_url,secret_token):return {"registered":bool(
 async def webhook_info(token):
     r=await telegram_api(token,"getWebhookInfo");return {"url":r.get("url") or "","has_custom_certificate":bool(r.get("has_custom_certificate",False)),"pending_update_count":int(r.get("pending_update_count") or 0),"last_error_date":r.get("last_error_date"),"last_error_message":r.get("last_error_message"),"max_connections":r.get("max_connections"),"allowed_updates":r.get("allowed_updates") or []}
 async def send_text(token,chat_id,text):return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text})
+async def request_phone_number(token,chat_id,text="Please share your phone number.",button_text="Share phone number"):
+    return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text,"reply_markup":{"keyboard":[[{"text":str(button_text or "Share phone number")[:64],"request_contact":True}]],"resize_keyboard":True,"one_time_keyboard":True}})
+async def remove_reply_keyboard(token,chat_id,text):
+    return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text,"reply_markup":{"remove_keyboard":True}})
 async def send_buttons(token,chat_id,text,buttons):
     rows=[]
     for b in buttons:
