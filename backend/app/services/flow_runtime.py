@@ -8,10 +8,9 @@ from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowSession,
 from app.models import ContactFieldDefinition, ContactFieldValue, ContactTag, ContactTagLink, Conversation, ConversationStatus, Message, MessageDirection, MessageStatus, User
 from app.services.flow_variables import render_whatsapp
 from app.services.service_window import service_window_open
-from app.services.whatsapp import WhatsAppError, send_list_message, send_media_message, send_reply_buttons, send_text_message
+from app.services.whatsapp import WhatsAppError, send_list_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
 
 logger=logging.getLogger(__name__)
-
 def _json(value):
     try:return json.loads(value or "{}")
     except (json.JSONDecodeError,TypeError):return {}
@@ -50,7 +49,7 @@ def _validate(config,inbound):
     if actual in {"button","interactive"}:return True,value,None
     if config.get("required",True) is not False and not value:return False,None,err or "Please enter a reply."
     if reply_type in {"number","integer","decimal"}:
-        try:num=float(value.replace(",","."));
+        try:num=float(value.replace(",","."))
         except ValueError:return False,None,err or "Please enter a valid number."
         if reply_type=="integer" and not num.is_integer():return False,None,err or "Please enter a whole number."
         lo,hi=config.get("min_value"),config.get("max_value")
@@ -86,6 +85,13 @@ async def _send_media(db,conversation,kind,config):
     phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     response=await send_media_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,kind,media,caption or None,filename or None);_store_outbound(db,conversation,response,"document" if kind=="file" else kind,caption or None)
+async def _send_commerce(db,conversation,config):
+    if not _can_send(conversation):return
+    catalog=render_whatsapp(db,conversation,config.get("catalog_id") or "").strip();retailer=render_whatsapp(db,conversation,config.get("product_retailer_id") or "").strip()
+    if not catalog or not retailer:logger.warning("WhatsApp commerce block requires catalog_id and product_retailer_id");return
+    phone=conversation.phone_number
+    if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
+    body=render_whatsapp(db,conversation,config.get("product_body") or config.get("product_description") or "").strip();footer=render_whatsapp(db,conversation,config.get("product_footer") or "").strip();response=await send_product_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,catalog,retailer,body or None,footer or None);_store_outbound(db,conversation,response,"commerce",body or config.get("product_name") or "Product")
 def _graph(db,flow_id):
     nodes=db.scalars(select(FlowNode).where(FlowNode.flow_id==flow_id)).all();edges=db.scalars(select(FlowEdge).where(FlowEdge.flow_id==flow_id).order_by(FlowEdge.sort_order,FlowEdge.id)).all();by_id={n.id:n for n in nodes};out={}
     for e in edges:out.setdefault(e.source_node_id,[]).append(e)
@@ -120,6 +126,7 @@ async def _action(db,conversation,kind,config):
     contact=conversation.contact
     if kind in {"send_message","question"}:await _send_text(db,conversation,config.get("text"));return
     if kind in {"image","video","audio","file"}:await _send_media(db,conversation,kind,config);return
+    if kind=="commerce":await _send_commerce(db,conversation,config);return
     if kind in {"add_tag","remove_tag"}:
         tid=config.get("tag_id")
         if not tid:return
@@ -175,6 +182,8 @@ async def _run(db,flow,conversation,session,start=None):
         visited+=1;session.current_node_id=current.id;session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;db.flush();cfg=_json(current.config_json);kind=current.node_type
         if kind==FlowNodeType.CONDITION:current=_next(by_id,out,current.id,"yes" if _condition(db,conversation,cfg) else "no");continue
         if kind==FlowNodeType.INTERACTIVE:
+            ecommerce=_next(by_id,out,current.id,"ecommerce")
+            if ecommerce and ecommerce.node_type==FlowNodeType.COMMERCE:current=ecommerce;continue
             if await _send_interactive(db,conversation,current,by_id,out,cfg):session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
             current=_next(by_id,out,current.id);continue
         if kind==FlowNodeType.BUTTON:
