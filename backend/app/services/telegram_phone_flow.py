@@ -1,8 +1,9 @@
-"""Telegram-native phone sharing support for Question flow blocks.
+"""Telegram-native Question flow extensions.
 
-This module applies a small runtime extension without duplicating the core flow
-engine. Import it before processing Telegram flow updates.
+Adds Telegram contact sharing and stable media-answer capture without duplicating
+the core Telegram flow runtime.
 """
+import json
 from contextvars import ContextVar
 
 from app.services import telegram_flow_runtime as runtime
@@ -12,6 +13,8 @@ _current_config: ContextVar[dict] = ContextVar("telegram_flow_config", default={
 _original_json = runtime._json
 _original_send = runtime._send
 _original_validate = runtime._validate
+
+_MEDIA_TYPES = {"photo", "video", "voice", "audio", "document", "sticker"}
 
 
 def _json(value):
@@ -31,16 +34,76 @@ async def _send(db, conversation, text):
     await _original_send(db, conversation, text)
 
 
+def _message_from_payload(inbound):
+    try:
+        payload = json.loads(inbound.payload_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload.get("message") or {}
+
+
+def _media_value(inbound):
+    """Return portable Telegram media metadata for a Question answer.
+
+    We deliberately store Telegram's stable file_id/file_unique_id plus the local
+    WA Connect message id. The bot token/file URL is never persisted in a custom
+    field because Telegram download URLs are temporary and contain credentials.
+    """
+    kind = str(inbound.message_type or "").strip().lower()
+    message = _message_from_payload(inbound)
+    media = None
+    if kind == "photo":
+        photos = message.get("photo") or []
+        media = photos[-1] if photos else {}
+    else:
+        media = message.get(kind) or {}
+    if not isinstance(media, dict):
+        media = {}
+    value = {
+        "channel": "telegram",
+        "type": kind,
+        "message_id": inbound.id,
+        "telegram_message_id": inbound.telegram_message_id,
+        "file_id": media.get("file_id"),
+        "file_unique_id": media.get("file_unique_id"),
+    }
+    if media.get("file_name"):
+        value["file_name"] = media.get("file_name")
+    if media.get("mime_type"):
+        value["mime_type"] = media.get("mime_type")
+    if media.get("file_size") is not None:
+        value["file_size"] = media.get("file_size")
+    if message.get("caption"):
+        value["caption"] = message.get("caption")
+    if kind == "sticker" and media.get("emoji"):
+        value["emoji"] = media.get("emoji")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def _validate(config, inbound):
     reply_type = str(config.get("reply_type") or config.get("input_type") or "text").strip().lower()
+    actual = str(inbound.message_type or "").strip().lower()
+    error = str(config.get("validation_error") or "").strip()
+
     if reply_type == "telegram_phone":
-        if str(inbound.message_type or "").strip().lower() != "contact":
-            return False, None, str(config.get("validation_error") or "").strip() or "Please use the Share phone number button."
+        if actual != "contact":
+            return False, None, error or "Please use the Share phone number button."
         value = str(inbound.body or "").strip()
         if not value:
-            return False, None, str(config.get("validation_error") or "").strip() or "Telegram did not provide a phone number. Please try again."
+            return False, None, error or "Telegram did not provide a phone number. Please try again."
         return True, value, None
-    return _original_validate(config, inbound)
+
+    # "Any media" accepts all Telegram media types. Specific media reply types
+    # retain the core validator's rules (including audio <-> voice compatibility).
+    if reply_type == "media":
+        if actual not in _MEDIA_TYPES:
+            return False, None, error or "Please reply with a photo, video, audio, document or sticker."
+        return True, _media_value(inbound), None
+
+    result = _original_validate(config, inbound)
+    if result[0] and actual in _MEDIA_TYPES:
+        return True, _media_value(inbound), None
+    return result
 
 
 def install():
