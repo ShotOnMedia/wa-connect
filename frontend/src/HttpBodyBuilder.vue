@@ -1,28 +1,50 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 const props=defineProps({modelValue:{default:()=>({})},fields:{type:Array,default:()=>[]},bodyType:{type:String,default:'json'}})
 const emit=defineEmits(['update:modelValue'])
 const systemKeys=new Set(['first_name','last_name','phone','subscriber_id','latitude','longitude','source'])
-const rows=computed(()=>{
-  const body=props.modelValue
+const rows=ref([])
+let syncing=false
+function rowsFromBody(body){
   if(!body||Array.isArray(body)||typeof body!=='object')return []
   return Object.entries(body).map(([key,value])=>{
     const text=value===null?'':String(value)
     const m=text.match(/^%([^%]+)%$/)
     return {key,type:m?'dynamic':'static',value:m?m[1]:text}
   })
-})
+}
+watch(()=>props.modelValue,(body)=>{
+  if(syncing){syncing=false;return}
+  rows.value=rowsFromBody(body)
+},{immediate:true,deep:true})
 const systemFields=computed(()=>props.fields.filter(f=>systemKeys.has(String(f.key||''))))
 const customFields=computed(()=>props.fields.filter(f=>!systemKeys.has(String(f.key||''))))
-function commit(next){
+function commit(){
   const obj={}
-  next.forEach(r=>{const key=String(r.key||'').trim();if(!key)return;obj[key]=r.type==='dynamic'?(r.value?`%${r.value}%`:''):r.value})
+  rows.value.forEach(r=>{
+    const key=String(r.key||'').trim()
+    if(!key)return
+    obj[key]=r.type==='dynamic'?(r.value?`%${r.value}%`:''):r.value
+  })
+  syncing=true
   emit('update:modelValue',obj)
 }
-function update(i,prop,value){const next=rows.value.map(r=>({...r}));next[i][prop]=value;if(prop==='type')next[i].value='';commit(next)}
-function add(){commit([...rows.value,{key:'',type:'static',value:''}])}
-function remove(i){commit(rows.value.filter((_,idx)=>idx!==i))}
-const preview=computed(()=>JSON.stringify(props.modelValue&&typeof props.modelValue==='object'&&!Array.isArray(props.modelValue)?props.modelValue:{},null,2))
+function update(i,prop,value){
+  rows.value[i][prop]=value
+  if(prop==='type')rows.value[i].value=''
+  commit()
+}
+function add(){
+  // Keep the new blank row locally until the user gives it a key. A blank key
+  // cannot be represented in the object emitted through v-model.
+  rows.value.push({key:'',type:'static',value:''})
+}
+function remove(i){rows.value.splice(i,1);commit()}
+const preview=computed(()=>{
+  const obj={}
+  rows.value.forEach(r=>{const key=String(r.key||'').trim();if(key)obj[key]=r.type==='dynamic'?(r.value?`%${r.value}%`:''):r.value})
+  return JSON.stringify(obj,null,2)
+})
 </script>
 <template>
   <div class="body-builder">
