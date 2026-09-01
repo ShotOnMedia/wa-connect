@@ -139,6 +139,10 @@ async def _send_interactive(db,conversation,node,by_id,out,config):
     if not _can_send(conversation):return False
     text=render_whatsapp(db,conversation,config.get("text") or "Choose an option").strip() or "Choose an option";list_nodes=_choice_nodes(by_id,out,node.id,"list_messages");button_nodes=_choice_nodes(by_id,out,node.id,"buttons");phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
+    if str(config.get("row_generation") or "static").lower()=="dynamic":
+        rows=[{"label":row["label"],"description":row["description"],"value":f'wfdyn:{node.id}:{row["index"]}'} for row in build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,config,10)]
+        if rows:
+            response=await send_list_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,text,rows,config.get("list_button_text") or "Choose",config.get("list_section_title") or "Options");_store_outbound(db,conversation,response,"interactive",text);return True
     if list_nodes:
         rows=[];template=next((n for n in list_nodes if str(_json(n.config_json).get("row_generation") or "static").lower()=="dynamic"),None)
         if template:
@@ -253,11 +257,18 @@ async def _resume(db,conversation,inbound,session):
     if session.waiting_for=="button" and waiting.node_type==FlowNodeType.INTERACTIVE:
         body=str(inbound.body or "").strip();dm=re.fullmatch(r"wfdyn:(\d+):(\d+)",body)
         if dm:
-            template=by_id.get(int(dm.group(1)));valid={n.id for n in _choice_nodes(by_id,out,waiting.id,"list_messages")}
-            if not template or template.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
-            cfg=_json(template.config_json);rows=build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,10);idx=int(dm.group(2))
+            owner=by_id.get(int(dm.group(1)));idx=int(dm.group(2))
+            if owner and owner.id==waiting.id and owner.node_type==FlowNodeType.INTERACTIVE:
+                cfg=_json(owner.config_json);rows=build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,10)
+                if idx>=len(rows):session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
+                save_dynamic_selection(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,rows[idx]);session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
+                if not next_node:_finish(session);return True
+                return await _run(db,flow,conversation,session,next_node)
+            valid={n.id for n in _choice_nodes(by_id,out,waiting.id,"list_messages")}
+            if not owner or owner.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
+            cfg=_json(owner.config_json);rows=build_dynamic_rows(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,10)
             if idx>=len(rows):session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
-            save_dynamic_selection(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,rows[idx]);session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;return await _run(db,flow,conversation,session,template)
+            save_dynamic_selection(db,"whatsapp",conversation.workspace_id,conversation.contact_id,cfg,rows[idx]);session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;return await _run(db,flow,conversation,session,owner)
         match=re.fullmatch(r"wfbtn:(\d+)",body);button=by_id.get(int(match.group(1))) if match else None;valid={n.id for n in _all_choices(by_id,out,waiting.id)}
         if not button or button.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
         session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;return await _run(db,flow,conversation,session,button)
