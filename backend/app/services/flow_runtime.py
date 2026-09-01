@@ -10,7 +10,8 @@ from app.services.flow_delay import schedule_delay
 from app.services.flow_tracking import complete as track_complete, event as track_event, fail as track_fail, latest_open_run, start_run
 from app.services.flow_variables import render_whatsapp
 from app.services.service_window import service_window_open
-from app.services.whatsapp import WhatsAppError, send_list_message, send_location_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
+from app.services.user_input import active_submission, campaign_for_submission, complete_submission, record_answer, start_submission
+from app.services.whatsapp import WhatsAppError, request_location_message, send_list_message, send_location_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
 
 logger=logging.getLogger(__name__)
 def _json(value):
@@ -97,6 +98,12 @@ async def _send_location(db,conversation,config):
     name=render_whatsapp(db,conversation,config.get("location_name") or "").strip();address=render_whatsapp(db,conversation,config.get("address") or "").strip();phone=conversation.phone_number
     if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
     response=await send_location_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,lat,lng,name or None,address or None);_store_outbound(db,conversation,response,"location",f"{lat},{lng}")
+async def _request_location(db,conversation,config):
+    if not _can_send(conversation):return False
+    text=render_whatsapp(db,conversation,config.get("text") or "Please share your current location.").strip() or "Please share your current location."
+    phone=conversation.phone_number
+    if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
+    response=await request_location_message(phone.phone_number_id,phone.access_token,conversation.contact.wa_id,text);_store_outbound(db,conversation,response,"location_request",text);return True
 async def _send_commerce(db,conversation,config):
     if not _can_send(conversation):return
     catalog=render_whatsapp(db,conversation,config.get("catalog_id") or "").strip();retailer=render_whatsapp(db,conversation,config.get("product_retailer_id") or "").strip()
@@ -202,6 +209,11 @@ async def _run(db,flow,conversation,session,start=None):
             if action in {"send_message","url"} and cfg.get("action_value"):await _send_text(db,conversation,cfg.get("action_value"))
             elif action=="start_flow":logger.info("Button start_flow action is not implemented yet")
             current=_next(by_id,out,current.id);continue
+        if kind==FlowNodeType.REQUEST_LOCATION:
+            if await _request_location(db,conversation,cfg):session.status=FlowSessionStatus.WAITING;session.waiting_for="location";db.flush();return True
+            current=_next(by_id,out,current.id);continue
+        if kind==FlowNodeType.USER_INPUT_FLOW:
+            start_submission(db,flow,conversation,current,"whatsapp",cfg);current=_next(by_id,out,current.id);continue
         if kind==FlowNodeType.DELAY:
             resume=_next(by_id,out,current.id);schedule_delay(db,"whatsapp",flow.id,conversation.id,current.id,resume.id if resume else None,cfg);session.status=FlowSessionStatus.WAITING;session.waiting_for="delay";session.updated_at=datetime.utcnow();db.flush();return True
         if kind!=FlowNodeType.TRIGGER:
@@ -217,6 +229,11 @@ async def _resume(db,conversation,inbound,session):
     if not waiting:_finish(session,FlowSessionStatus.FAILED);return False
     session.last_inbound_message_id=inbound.id;session.updated_at=datetime.utcnow()
     if session.waiting_for=="delay":return False
+    if session.waiting_for=="location" and waiting.node_type==FlowNodeType.REQUEST_LOCATION:
+        if str(inbound.message_type or "").strip().lower()!="location":session.status=FlowSessionStatus.WAITING;session.waiting_for="location";await _send_text(db,conversation,"Please use the location sharing option to send your current location.");db.flush();return True
+        session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
+        if not next_node:_finish(session);return True
+        return await _run(db,flow,conversation,session,next_node)
     if session.waiting_for=="button" and waiting.node_type==FlowNodeType.INTERACTIVE:
         match=re.fullmatch(r"wfbtn:(\d+)",str(inbound.body or "").strip());button=by_id.get(int(match.group(1))) if match else None;valid={n.id for n in _all_choices(by_id,out,waiting.id)}
         if not button or button.id not in valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="button";db.flush();return True
@@ -226,8 +243,18 @@ async def _resume(db,conversation,inbound,session):
     if not valid:session.status=FlowSessionStatus.WAITING;session.waiting_for="reply";await _send_text(db,conversation,error or "Please try again.");db.flush();return True
     fid=cfg.get("capture_field_id") or cfg.get("save_reply_field_id") or cfg.get("field_id")
     if fid:_set_field(db,conversation,int(fid),value)
-    session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
-    if not next_node:_finish(session);return True
+    submission=active_submission(db,flow.id,conversation.id,"whatsapp")
+    if submission:record_answer(db,submission,waiting,cfg,value)
+    next_question=_next(by_id,out,waiting.id,"next")
+    thank_you=_next(by_id,out,waiting.id,"thank_you")
+    next_node=next_question or thank_you
+    if thank_you and not next_question and submission:
+        _,campaign_cfg=campaign_for_submission(db,submission);await complete_submission(db,submission,campaign_cfg)
+    session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None
+    if not next_node:
+        if submission:
+            _,campaign_cfg=campaign_for_submission(db,submission);await complete_submission(db,submission,campaign_cfg)
+        _finish(session);return True
     return await _run(db,flow,conversation,session,next_node)
 def _track_state(run_id,session):
     if session.status==FlowSessionStatus.COMPLETED:track_complete(run_id);return
