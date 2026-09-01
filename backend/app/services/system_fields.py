@@ -53,7 +53,7 @@ def sync_whatsapp_system_fields(db: Session, contact: Contact, name: str | None 
     if location:
         lat, lng = location.get("latitude"), location.get("longitude")
         if lat is not None and lng is not None:
-            _set_wa_value(db, contact, "latitude", lat); _set_wa_value(db, contact, "longitude", lng); _set_wa_value(db, contact, "location", f"{lat},{lng}")
+            _set_wa_value(db, contact, "latitude", lat); _set_wa_value(db, contact, "longitude", lng); _set_wa_value(db, contact, "location", f"{lat}, {lng}")
 
 
 def _set_tg_value(db: Session, contact: TelegramContact, key: str, value) -> None:
@@ -74,4 +74,4 @@ def sync_telegram_system_fields(db: Session, contact: TelegramContact, phone_num
     if location:
         lat, lng = location.get("latitude"), location.get("longitude")
         if lat is not None and lng is not None:
-            _set_tg_value(db, contact, "latitude", lat); _set_tg_value(db, contact, "longitude", lng); _set_tg_value(db, contact, "location", f"{lat},{lng}")
+            _set_tg_value(db, contact, "latitude", lat); _set_tg_value(db, contact, "longitude", lng); _set_tg_value(db, contact, "location", f"{lat}, {lng}")
