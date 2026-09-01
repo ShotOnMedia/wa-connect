@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.flow_channel_models import FlowChannelTarget, TelegramFlowSession
 from app.flow_models import Flow, FlowEdge, FlowNode, FlowNodeType, FlowStatus, FlowTriggerType
 from app.models import ContactFieldDefinition
+from app.services.flow_delay import schedule_delay
 from app.services.telegram import TelegramError, send_buttons, send_media, send_product_card, send_text
 from app.services.telegram_flow_actions import assign_user, change_tag, condition_result, set_field, set_status
 from app.telegram_models import TelegramContactFieldValue, TelegramConversation, TelegramMessage
@@ -124,7 +125,8 @@ async def _run_from(db,flow,conversation,inbound,session,node,by_id,out):
         if kind==FlowNodeType.ASSIGN_USER.value:assign_user(db,conversation,cfg.get("user_id"));node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.SET_STATUS.value:set_status(db,conversation,cfg.get("status"));node=_next(by_id,out,node.id);continue
         if kind==FlowNodeType.CONDITION.value:node=_next(by_id,out,node.id,"yes" if condition_result(db,conversation,cfg) else "no");continue
-        if kind==FlowNodeType.DELAY.value:logger.info("Telegram delay node skipped until scheduled resume support is implemented");node=_next(by_id,out,node.id);continue
+        if kind==FlowNodeType.DELAY.value:
+            resume=_next(by_id,out,node.id);schedule_delay(db,"telegram",flow.id,conversation.id,node.id,resume.id if resume else None,cfg);session.status="waiting";session.waiting_for="delay";session.updated_at=datetime.utcnow();db.flush();return True
         logger.info("Telegram flow %s skipping unsupported node type %s",flow.id,kind);node=_next(by_id,out,node.id)
     if safety>=100:raise RuntimeError("Telegram flow graph exceeded 100 nodes; possible loop detected")
     session.status="completed";session.current_node_id=None;session.waiting_for=None;session.ended_at=datetime.utcnow();session.updated_at=datetime.utcnow();db.flush();return True
@@ -140,6 +142,7 @@ async def _resume(db,conversation,inbound,session):
     nodes,by_id,out=_graph(db,flow.id);waiting=by_id.get(session.current_node_id)
     if not waiting:session.status="failed";session.waiting_for=None;session.ended_at=datetime.utcnow();db.flush();return False
     session.last_inbound_message_id=inbound.id;session.updated_at=datetime.utcnow()
+    if session.waiting_for=="delay":return False
     if session.waiting_for=="button" and _enum(waiting.node_type)==FlowNodeType.INTERACTIVE.value:
         match=re.fullmatch(r"wfbtn:(\d+)",str(inbound.body or "").strip());button=by_id.get(int(match.group(1))) if match else None;valid_ids={n.id for n in _all_choices(by_id,out,waiting.id)}
         if not button or button.id not in valid_ids:session.status="waiting";session.waiting_for="button";db.flush();return True
@@ -152,10 +155,21 @@ async def _resume(db,conversation,inbound,session):
     session.status="active";session.waiting_for=None;next_node=_next(by_id,out,waiting.id)
     if not next_node:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return True
     return await _run_from(db,flow,conversation,inbound,session,next_node,by_id,out)
+async def resume_telegram_delay(db:Session,job)->bool:
+    conversation=db.get(TelegramConversation,job.conversation_id);flow=db.get(Flow,job.flow_id);session=_session(db,job.conversation_id)
+    target=db.scalar(select(FlowChannelTarget).where(FlowChannelTarget.flow_id==job.flow_id)) if flow else None
+    if not conversation or not flow or flow.status!=FlowStatus.ACTIVE or not target or target.channel!="telegram" or not session or session.flow_id!=flow.id:return False
+    if session.waiting_for!="delay" or session.current_node_id!=job.delay_node_id:return False
+    session.status="active";session.waiting_for=None;session.updated_at=datetime.utcnow()
+    if not job.resume_node_id:session.status="completed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return True
+    nodes,by_id,out=_graph(db,flow.id);node=by_id.get(job.resume_node_id)
+    if not node:session.status="failed";session.current_node_id=None;session.ended_at=datetime.utcnow();db.flush();return False
+    return await _run_from(db,flow,conversation,None,session,node,by_id,out)
 async def run_telegram_flows_for_inbound(db:Session,conversation:TelegramConversation,inbound:TelegramMessage)->int:
     existing=_session(db,conversation.id)
     if existing and existing.status=="waiting":
         try:
+            if existing.waiting_for=="delay":return 0
             if await _resume(db,conversation,inbound,existing):return 1
         except TelegramError:raise
         except Exception:logger.exception("Telegram flow resume failed flow=%s conversation=%s",existing.flow_id,conversation.id);raise
