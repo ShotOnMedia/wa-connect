@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.system_fields import sync_telegram_system_fields
 from app.services.telegram import answer_callback
-from app.services.telegram_flow_runtime import run_telegram_flows_for_inbound
+from app.services.telegram_phone_flow import run_telegram_flows_for_inbound
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
 router=APIRouter(prefix="/webhooks/telegram",tags=["Telegram webhooks"]); logger=logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def detect_message_type(message:dict)->tuple[str,str|None]:
     if "document" in message:return "document",message.get("caption")
     if "sticker" in message:return "sticker",(message.get("sticker") or {}).get("emoji")
     if "location" in message:
-        location=message.get("location") or {};return "location",f"{location.get('latitude')},{location.get('longitude')}"
+        location=message.get("location") or {};return "location",f"{location.get('latitude')}, {location.get('longitude')}"
     if "contact" in message:return "contact",(message.get("contact") or {}).get("phone_number")
     return "unknown",None
 
