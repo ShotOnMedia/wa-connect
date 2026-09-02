@@ -15,16 +15,22 @@ def _unix_datetime(value: str | int | None) -> datetime | None:
 
 
 def _extract_body(message: dict) -> str | None:
+    """Return the human-readable message body used by Live Chat.
+
+    Interactive reply IDs are routing values (for example wfdyn:56:1). Meta also
+    supplies the visible row/button title, so keep the ID in payload_json for the
+    flow runtime and show the title to agents in conversation history.
+    """
     message_type=message.get("type","unknown")
     if message_type=="text": return message.get("text",{}).get("body")
     if message_type=="button":
-        button=message.get("button") or {}; return button.get("payload") or button.get("text")
+        button=message.get("button") or {}; return button.get("text") or button.get("payload")
     if message_type=="interactive":
         interactive=message.get("interactive") or {}; reply_type=interactive.get("type")
         if reply_type=="button_reply":
-            reply=interactive.get("button_reply") or {}; return reply.get("id") or reply.get("title")
+            reply=interactive.get("button_reply") or {}; return reply.get("title") or reply.get("id")
         if reply_type=="list_reply":
-            reply=interactive.get("list_reply") or {}; return reply.get("id") or reply.get("title")
+            reply=interactive.get("list_reply") or {}; return reply.get("title") or reply.get("id")
         return json.dumps(interactive,ensure_ascii=False)
     if message_type in {"image","video","audio","document","sticker","location","contacts"}: return json.dumps(message.get(message_type),ensure_ascii=False)
     return None
