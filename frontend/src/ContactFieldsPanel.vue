@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from './api'
 
 const props = defineProps({ contact: { type: Object, default: null }, admin: { type: Boolean, default: false }, channel: { type: String, default: 'whatsapp' }, compact: { type: Boolean, default: false } })
@@ -8,17 +8,21 @@ const form = reactive({ key:'', label:'', field_type:'text', options:'', require
 const systemKeys=new Set(['name','subscriber_id','source','location','latitude','longitude'])
 const systemFields=computed(()=>fields.value.filter(f=>f.system||systemKeys.has(f.key)))
 const customFields=computed(()=>fields.value.filter(f=>!(f.system||systemKeys.has(f.key))))
+let refreshTimer=null
 
 function normalizeValue(field, value){ return field.field_type==='checkbox' ? value==='true'||value===true : (value ?? '') }
 async function loadDefinitions(){ if(!props.admin)return; fields.value=await api.contactFields() }
-async function loadValues(){ if(!props.contact){fields.value=[];return} loading.value=true;error.value='';try{const rows=props.channel==='telegram'?await api.telegramContactCustomFields(props.contact.id):await api.contactCustomFields(props.contact.id);fields.value=rows;for(const f of rows)values[f.id]=normalizeValue(f,f.value)}catch(e){error.value=e.message}finally{loading.value=false} }
+async function loadValues({silent=false}={}){ if(!props.contact){fields.value=[];return} if(!silent)loading.value=true;error.value='';try{const rows=props.channel==='telegram'?await api.telegramContactCustomFields(props.contact.id):await api.contactCustomFields(props.contact.id);fields.value=rows;for(const f of rows){if(!saving.value[f.id])values[f.id]=normalizeValue(f,f.value)}}catch(e){if(!silent)error.value=e.message}finally{if(!silent)loading.value=false} }
 async function saveValue(field, showMessage=true){if(field.system||systemKeys.has(field.key))return true;saving.value={...saving.value,[field.id]:true};error.value='';if(showMessage)success.value='';try{const row=props.channel==='telegram'?await api.setTelegramContactCustomField(props.contact.id,field.id,values[field.id]):await api.setContactCustomField(props.contact.id,field.id,values[field.id]);values[field.id]=normalizeValue(row,row.value);if(showMessage)success.value=`${field.label} saved.`;return true}catch(e){error.value=e.message;return false}finally{saving.value={...saving.value,[field.id]:false}}}
 async function saveAll(){if(!props.contact||!customFields.value.length)return;savingAll.value=true;error.value='';success.value='';let ok=true;for(const field of customFields.value){if(!await saveValue(field,false)){ok=false;break}}if(ok)success.value='Custom fields saved.';savingAll.value=false}
 async function createField(){error.value='';success.value='';try{const payload={...form,options:form.field_type==='select'?form.options.split('\n').map(v=>v.trim()).filter(Boolean):[]};await api.createContactField(payload);Object.assign(form,{key:'',label:'',field_type:'text',options:'',required:false,active:true,sort_order:fields.value.length});await loadDefinitions();success.value='Contact field created.'}catch(e){error.value=e.message}}
 async function toggleField(field){error.value='';try{await api.updateContactField(field.id,{active:!field.active});await loadDefinitions()}catch(e){error.value=e.message}}
 async function removeField(field){if(!confirm(`Delete custom field “${field.label}” and its stored values?`))return;error.value='';try{await api.deleteContactField(field.id);await loadDefinitions()}catch(e){error.value=e.message}}
-watch(()=>props.contact?.id,loadValues,{immediate:true})
-onMounted(()=>{if(props.admin&&!props.contact)loadDefinitions()})
+function startLiveRefresh(){if(refreshTimer)window.clearInterval(refreshTimer);refreshTimer=null;if(props.compact&&props.contact)refreshTimer=window.setInterval(()=>{if(!savingAll.value)loadValues({silent:true})},3000)}
+watch(()=>props.contact?.id,async()=>{await loadValues();startLiveRefresh()},{immediate:true})
+watch(()=>props.compact,startLiveRefresh)
+onMounted(()=>{if(props.admin&&!props.contact)loadDefinitions();startLiveRefresh()})
+onBeforeUnmount(()=>{if(refreshTimer)window.clearInterval(refreshTimer)})
 </script>
 
 <template>
