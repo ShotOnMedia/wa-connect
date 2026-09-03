@@ -4,7 +4,8 @@ from app.api.auth import router as auth_router
 from app.api.contact_fields import router as contact_fields_router
 from app.api.contacts import router as contacts_router
 from app.api.conversations import router as conversations_router
-from app.api.developer_api import admin_router as developer_api_admin_router, external_router as developer_api_external_router
+from app.api.developer_api import admin_router as developer_api_admin_router
+from app.api.developer_api_external import router as developer_api_external_router
 from app.api.flows import router as flows_router
 from app.api.http_apis import router as http_apis_router
 from app.api.settings import router as settings_router
