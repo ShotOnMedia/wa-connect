@@ -356,11 +356,30 @@ async def trigger_bot_flow(
         raise HTTPException(status_code=422, detail=f"Flow belongs to {channel}, not {payload.channel}")
 
     channel_workspace_id = int(flow.workspace_id)
-    if channel == "telegram":
+    raw_subscriber = str(payload.subscriber).strip()
+
+    if ":" in raw_subscriber:
+        ref_channel, ref_id = _parse_subscriber_ref(raw_subscriber)
+        if ref_channel != channel:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Flow belongs to {channel}, but subscriber reference belongs to {ref_channel}",
+            )
+        model = TelegramContact if channel == "telegram" else Contact
+        subscriber = db.scalar(
+            select(model).where(
+                model.workspace_id == channel_workspace_id,
+                model.id == ref_id,
+            )
+        )
+    elif channel == "telegram":
         try:
-            telegram_user_id = int(payload.subscriber)
+            telegram_user_id = int(raw_subscriber)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail="Telegram subscriber must be the numeric Telegram user ID") from exc
+            raise HTTPException(
+                status_code=422,
+                detail="Telegram subscriber must be a telegram:<id> reference or numeric Telegram user ID",
+            ) from exc
         subscriber = db.scalar(
             select(TelegramContact).where(
                 TelegramContact.workspace_id == channel_workspace_id,
@@ -368,7 +387,7 @@ async def trigger_bot_flow(
             )
         )
     else:
-        wa_id = "".join(ch for ch in payload.subscriber if ch.isdigit())
+        wa_id = "".join(ch for ch in raw_subscriber if ch.isdigit())
         subscriber = db.scalar(
             select(Contact).where(Contact.workspace_id == channel_workspace_id, Contact.wa_id == wa_id)
         )
