@@ -12,10 +12,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.developer_api import _conversation_out, _log, _set_fields
+from app.api.developer_api import _assign_tag, _conversation_out, _log, _remove_tag, _set_fields, _tag_rows
 from app.api.developer_api_external import _telegram_workspace_ids
 from app.core.database import get_db
-from app.models import Contact, ContactFieldDefinition, Conversation, ConversationStatus, User
+from app.models import Contact, ContactFieldDefinition, ContactTag, Conversation, ConversationStatus, User
 from app.services.developer_api import DeveloperApiContext, require_scope
 from app.telegram_models import TelegramContact, TelegramConversation
 
@@ -34,6 +34,14 @@ class BodySubscriberConversation(BaseModel):
     subscriber: str
     status: Literal["open", "pending", "resolved"] | None = None
     assigned_user_id: int | None = None
+
+
+class BodySubscriberTags(BaseModel):
+    channel: Channel | None = None
+    subscriber: str
+    tags: list[str | int] = Field(default_factory=list)
+    tag_id: int | None = None
+    name: str | None = None
 
 
 def _resolve_body_subscriber(db: Session, ctx: DeveloperApiContext, channel: Channel | None, subscriber: str):
@@ -94,13 +102,7 @@ def _resolve_body_subscriber(db: Session, ctx: DeveloperApiContext, channel: Cha
 
 
 def _ensure_shared_fields(db: Session, ctx: DeveloperApiContext, target_workspace_id: int, keys) -> None:
-    """Lazily mirror shared field definitions into the subscriber workspace.
-
-    The Settings UI exposes one shared field catalogue, but older Telegram bot
-    workspaces may pre-date a field created in the primary workspace.  API
-    writes should therefore resolve that shared key and create the missing
-    workspace-local definition before storing the channel value.
-    """
+    """Lazily mirror shared field definitions into the subscriber workspace."""
     wanted = {str(key).strip() for key in keys if str(key).strip()}
     if not wanted:
         return
@@ -164,6 +166,81 @@ def post_subscriber_fields(request: Request, payload: BodySubscriberFields, db: 
 @router.patch("/subscribers/fields")
 def patch_subscriber_fields(request: Request, payload: BodySubscriberFields, db: Session = Depends(get_db), ctx: DeveloperApiContext = Depends(require_scope("fields:write"))):
     return _write_fields(request, payload, db, ctx)
+
+
+def _tag_names(db: Session, ctx: DeveloperApiContext, target_workspace_id: int, payload: BodySubscriberTags) -> list[str]:
+    """Resolve tag names from names or IDs and keep channel workspaces isolated."""
+    names: list[str] = []
+    values: list[str | int] = list(payload.tags)
+    if payload.tag_id is not None:
+        values.append(payload.tag_id)
+    if payload.name and payload.name.strip():
+        values.append(payload.name.strip())
+    if not values:
+        raise HTTPException(status_code=422, detail="Provide at least one tag in tags, tag_id, or name")
+
+    visible_workspace_ids = {int(ctx.workspace_id), int(target_workspace_id)} | _telegram_workspace_ids(db)
+    for value in values:
+        if isinstance(value, int):
+            tag = db.scalar(select(ContactTag).where(ContactTag.id == value, ContactTag.workspace_id.in_(visible_workspace_ids)))
+            if not tag:
+                raise HTTPException(status_code=404, detail=f"Tag {value} not found")
+            name = tag.name
+        else:
+            name = str(value).strip()
+            if not name:
+                continue
+        if name.lower() not in {item.lower() for item in names}:
+            names.append(name)
+    if not names:
+        raise HTTPException(status_code=422, detail="Provide at least one non-empty tag")
+    return names
+
+
+def _write_tags(request: Request, payload: BodySubscriberTags, db: Session, ctx: DeveloperApiContext):
+    started = time.perf_counter()
+    channel, subscriber = _resolve_body_subscriber(db, ctx, payload.channel, payload.subscriber)
+    names = _tag_names(db, ctx, subscriber.workspace_id, payload)
+    for name in names:
+        _assign_tag(db, subscriber.workspace_id, subscriber.id, channel, name=name)
+    db.commit()
+    out = _tag_rows(db, subscriber.workspace_id, subscriber.id, channel)
+    _log(db, ctx, request, started, channel=channel)
+    return {"subscriber": f"{channel}:{subscriber.id}", "channel": channel, "tags": out}
+
+
+def _delete_tags(request: Request, payload: BodySubscriberTags, db: Session, ctx: DeveloperApiContext):
+    started = time.perf_counter()
+    channel, subscriber = _resolve_body_subscriber(db, ctx, payload.channel, payload.subscriber)
+    names = _tag_names(db, ctx, subscriber.workspace_id, payload)
+    for name in names:
+        tag = db.scalar(select(ContactTag).where(ContactTag.workspace_id == subscriber.workspace_id, ContactTag.name.ilike(name)))
+        if tag:
+            _remove_tag(db, subscriber.id, channel, tag.id)
+    db.commit()
+    out = _tag_rows(db, subscriber.workspace_id, subscriber.id, channel)
+    _log(db, ctx, request, started, channel=channel)
+    return {"subscriber": f"{channel}:{subscriber.id}", "channel": channel, "tags": out}
+
+
+@router.post("/subscribers/tags")
+def post_subscriber_tags(request: Request, payload: BodySubscriberTags, db: Session = Depends(get_db), ctx: DeveloperApiContext = Depends(require_scope("tags:write"))):
+    return _write_tags(request, payload, db, ctx)
+
+
+@router.patch("/subscribers/tags")
+def patch_subscriber_tags(request: Request, payload: BodySubscriberTags, db: Session = Depends(get_db), ctx: DeveloperApiContext = Depends(require_scope("tags:write"))):
+    return _write_tags(request, payload, db, ctx)
+
+
+@router.delete("/subscribers/tags")
+def delete_subscriber_tags(request: Request, payload: BodySubscriberTags, db: Session = Depends(get_db), ctx: DeveloperApiContext = Depends(require_scope("tags:write"))):
+    return _delete_tags(request, payload, db, ctx)
+
+
+@router.post("/subscribers/tags/remove")
+def post_remove_subscriber_tags(request: Request, payload: BodySubscriberTags, db: Session = Depends(get_db), ctx: DeveloperApiContext = Depends(require_scope("tags:write"))):
+    return _delete_tags(request, payload, db, ctx)
 
 
 def _write_conversation(request: Request, payload: BodySubscriberConversation, db: Session, ctx: DeveloperApiContext):
