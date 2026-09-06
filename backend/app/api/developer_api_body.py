@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.api.developer_api import _conversation_out, _log, _set_fields
 from app.api.developer_api_external import _telegram_workspace_ids
 from app.core.database import get_db
-from app.models import Contact, Conversation, ConversationStatus, User
+from app.models import Contact, ContactFieldDefinition, Conversation, ConversationStatus, User
 from app.services.developer_api import DeveloperApiContext, require_scope
 from app.telegram_models import TelegramContact, TelegramConversation
 
@@ -93,9 +93,63 @@ def _resolve_body_subscriber(db: Session, ctx: DeveloperApiContext, channel: Cha
     return channel, row
 
 
+def _ensure_shared_fields(db: Session, ctx: DeveloperApiContext, target_workspace_id: int, keys) -> None:
+    """Lazily mirror shared field definitions into the subscriber workspace.
+
+    The Settings UI exposes one shared field catalogue, but older Telegram bot
+    workspaces may pre-date a field created in the primary workspace.  API
+    writes should therefore resolve that shared key and create the missing
+    workspace-local definition before storing the channel value.
+    """
+    wanted = {str(key).strip() for key in keys if str(key).strip()}
+    if not wanted:
+        return
+    existing = {
+        str(key)
+        for key in db.scalars(
+            select(ContactFieldDefinition.key).where(
+                ContactFieldDefinition.workspace_id == target_workspace_id,
+                ContactFieldDefinition.key.in_(wanted),
+                ContactFieldDefinition.active.is_(True),
+            )
+        ).all()
+    }
+    missing = wanted - existing
+    if not missing:
+        return
+
+    source_workspace_ids = [int(ctx.workspace_id)] + sorted(_telegram_workspace_ids(db) - {int(ctx.workspace_id)})
+    for key in sorted(missing):
+        source = None
+        for workspace_id in source_workspace_ids:
+            source = db.scalar(
+                select(ContactFieldDefinition).where(
+                    ContactFieldDefinition.workspace_id == workspace_id,
+                    ContactFieldDefinition.key == key,
+                    ContactFieldDefinition.active.is_(True),
+                )
+            )
+            if source:
+                break
+        if not source:
+            continue
+        db.add(ContactFieldDefinition(
+            workspace_id=target_workspace_id,
+            key=source.key,
+            label=source.label,
+            field_type=source.field_type,
+            options_json=source.options_json,
+            required=source.required,
+            active=True,
+            sort_order=source.sort_order,
+        ))
+    db.flush()
+
+
 def _write_fields(request: Request, payload: BodySubscriberFields, db: Session, ctx: DeveloperApiContext):
     started = time.perf_counter()
     channel, subscriber = _resolve_body_subscriber(db, ctx, payload.channel, payload.subscriber)
+    _ensure_shared_fields(db, ctx, subscriber.workspace_id, payload.fields.keys())
     out = _set_fields(db, subscriber.workspace_id, subscriber.id, channel, payload.fields)
     db.commit()
     _log(db, ctx, request, started, channel=channel)
