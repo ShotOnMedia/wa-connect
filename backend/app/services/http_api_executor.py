@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import time
 from datetime import datetime
@@ -11,6 +12,16 @@ from sqlalchemy.orm import Session
 from app.http_api_models import HttpApi, HttpApiCall
 from app.models import ContactFieldDefinition, ContactFieldType, ContactFieldValue
 from app.telegram_models import TelegramContactFieldValue
+
+logger = logging.getLogger(__name__)
+
+# Flow HTTP calls must never be able to monopolise the API indefinitely.  The
+# value remains configurable per HTTP API, but is bounded to a sane runtime
+# range so a typo such as 600 seconds cannot exhaust the SQLAlchemy pool while
+# Telegram/WhatsApp retry webhooks.
+DEFAULT_TIMEOUT_SECONDS = 15.0
+MIN_TIMEOUT_SECONDS = 1.0
+MAX_TIMEOUT_SECONDS = 30.0
 
 
 def _loads(value, default):
@@ -39,6 +50,16 @@ def _render_value(value: Any, render: Callable[[str], str]):
     if isinstance(value, dict):
         return {k: _render_value(v, render) for k, v in value.items()}
     return value
+
+
+def _timeout_seconds(value: Any) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT_SECONDS
+    if timeout <= 0:
+        timeout = DEFAULT_TIMEOUT_SECONDS
+    return max(MIN_TIMEOUT_SECONDS, min(timeout, MAX_TIMEOUT_SECONDS))
 
 
 def extract_path(data: Any, path: str):
@@ -149,22 +170,42 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
     final_url = requested_url
     content_type = None
     error = None
+    success = False
+
+    # Build every request value while the ORM objects/session are available.
+    # expire_on_commit=False is configured for this project, so after the
+    # checkpoint below the HttpApi object remains safe to read without keeping
+    # a database connection checked out during the external network wait.
+    method = str(api.method or "GET").upper()
+    timeout_seconds = _timeout_seconds(api.timeout_seconds)
+    headers = _pairs(_loads(api.headers_json, []), render)
+    params = _pairs(_loads(api.query_json, []), render)
+    cookies = _pairs(_loads(api.cookies_json, []), render)
+    body = _render_value(_loads(api.body_json, None), render)
+    body_type = str(api.body_type or "none").lower()
+    api_id = api.id
+
+    kwargs = {"headers": headers, "params": params, "cookies": cookies}
+    if body_type == "json" and body is not None:
+        kwargs["json"] = body
+    elif body_type in {"raw", "text"} and body is not None:
+        kwargs["content"] = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+    elif body_type in {"form", "x-www-form-urlencoded"} and body is not None:
+        kwargs["data"] = body
+
+    # IMPORTANT: flow/webhook sessions have already performed DB work before
+    # reaching an HTTP node.  Committing here creates a durable checkpoint and
+    # releases that SQLAlchemy connection back to the pool before we wait on a
+    # third-party server.  Without this, repeated Telegram/WhatsApp webhook
+    # retries can occupy the entire DB pool and make unrelated endpoints such
+    # as /auth/me time out as well.
+    db.commit()
 
     try:
-        headers = _pairs(_loads(api.headers_json, []), render)
-        params = _pairs(_loads(api.query_json, []), render)
-        cookies = _pairs(_loads(api.cookies_json, []), render)
-        kwargs = {"headers": headers, "params": params, "cookies": cookies, "timeout": api.timeout_seconds}
-        body = _render_value(_loads(api.body_json, None), render)
-        body_type = str(api.body_type or "none").lower()
-        if body_type == "json" and body is not None:
-            kwargs["json"] = body
-        elif body_type in {"raw", "text"} and body is not None:
-            kwargs["content"] = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
-        elif body_type in {"form", "x-www-form-urlencoded"} and body is not None:
-            kwargs["data"] = body
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.request(api.method, requested_url, **kwargs)
+        timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 10.0))
+        limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, limits=limits) as client:
+            response = await client.request(method, requested_url, **kwargs)
         status_code = response.status_code
         final_url = str(response.url)
         content_type = response.headers.get("content-type")
@@ -176,15 +217,29 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
         success = 200 <= status_code < 400
         if not success:
             error = f"HTTP {status_code}"
+    except httpx.TimeoutException as exc:
+        error = f"HTTP request timed out after {timeout_seconds:g} seconds"
+        logger.warning("HTTP API %s timed out after %ss: %s", api_id, timeout_seconds, requested_url)
+    except httpx.ConnectError as exc:
+        error = f"Connection failed: {exc}"
+        logger.warning("HTTP API %s connection failed: %s", api_id, exc)
+    except httpx.RequestError as exc:
+        error = f"Request failed: {exc}"
+        logger.warning("HTTP API %s request failed: %s", api_id, exc)
     except Exception as exc:
-        success = False
         error = f"{type(exc).__name__}: {exc}"
+        logger.exception("HTTP API %s execution failed", api_id)
 
     duration_ms = int((time.perf_counter() - started) * 1000)
-    api.total_calls += 1
-    api.total_success += 1 if success else 0
-    api.total_error += 0 if success else 1
-    api.last_called_at = datetime.utcnow()
+
+    # Re-acquire the API row after the network wait.  This also makes the
+    # counter update robust if the session had to obtain a fresh connection.
+    api_row = db.get(HttpApi, api_id)
+    if api_row:
+        api_row.total_calls += 1
+        api_row.total_success += 1 if success else 0
+        api_row.total_error += 0 if success else 1
+        api_row.last_called_at = datetime.utcnow()
 
     mapped = []
     if success and apply_mappings and response_json is not None and channel and workspace_id and contact_id:
@@ -197,6 +252,6 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
             if _save_mapping(db, channel, workspace_id, contact_id, target_key, value):
                 mapped.append({"source_path": source_path, "target_key": target_key, "value": value})
 
-    db.add(HttpApiCall(http_api_id=api.id, flow_run_id=flow_run_id, status_code=status_code, success=success, duration_ms=duration_ms, error_message=error, response_preview=response_text, created_at=datetime.utcnow()))
+    db.add(HttpApiCall(http_api_id=api_id, flow_run_id=flow_run_id, status_code=status_code, success=success, duration_ms=duration_ms, error_message=error, response_preview=response_text, created_at=datetime.utcnow()))
     db.flush()
-    return {"success": success, "status_code": status_code, "method": api.method, "requested_url": requested_url, "final_url": final_url, "content_type": content_type, "duration_ms": duration_ms, "error": error, "response": response_text, "response_json": response_json, "response_paths": flatten_paths(response_json) if response_json is not None else [], "mapped": mapped}
+    return {"success": success, "status_code": status_code, "method": method, "requested_url": requested_url, "final_url": final_url, "content_type": content_type, "duration_ms": duration_ms, "timeout_seconds": timeout_seconds, "error": error, "response": response_text, "response_json": response_json, "response_paths": flatten_paths(response_json) if response_json is not None else [], "mapped": mapped}
