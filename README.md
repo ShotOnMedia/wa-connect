@@ -1,23 +1,6 @@
 # WA Connect
 
-WA Connect is a self-hosted WhatsApp Business engagement platform for connecting Meta WhatsApp Business Accounts, receiving and sending messages, operating a live team inbox, and building automated conversation flows.
-
-## v0.1.0 — WhatsApp Core
-
-The first milestone establishes the WhatsApp transport and conversation model:
-
-- Multi-workspace / multi-WABA / multi-phone-number data model
-- Meta webhook verification
-- Meta webhook signature validation
-- Incoming WhatsApp message ingestion
-- Contact and conversation creation
-- Delivery/read/failure status ingestion
-- Conversation/message APIs
-- Outbound text messaging through the WhatsApp Cloud API
-- MariaDB persistence
-- Redis service ready for realtime inbox events and workers
-
-The v0.1.0 target is simple: send a message to a connected WhatsApp number, see it appear in WA Connect, reply from WA Connect, and receive the response in WhatsApp.
+WA Connect is a self-hosted multi-channel messaging and automation platform for WhatsApp Business and Telegram. It provides live team inboxes, contacts and custom fields, visual automation flows, reusable HTTP APIs, Developer API access, User Input submissions, and configurable Local/S3-compatible media storage.
 
 ## Development
 
@@ -26,9 +9,33 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The API will be available at `http://localhost:8000`, Swagger at `http://localhost:8000/docs`, and health status at `http://localhost:8000/health`.
+The development stack uses Vite and Uvicorn reload mode for rapid iteration.
 
-### Meta webhook
+## Production
+
+A separate production stack is provided so production servers do not run the development frontend, source-code bind mounts, or Uvicorn reload mode.
+
+```bash
+cp .env.production.example .env
+nano .env
+
+docker compose -f docker-compose.prod.yml config >/dev/null
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+The production gateway listens on port `8080` by default and is intended to sit behind an HTTPS reverse proxy such as Nginx Proxy Manager.
+
+See [`deploy/PRODUCTION.md`](deploy/PRODUCTION.md) for the complete fresh-install, update, backup, restore, media-storage, and server-migration procedure.
+
+## Health
+
+```text
+GET /health
+```
+
+A healthy instance returns the application status and version.
+
+## WhatsApp webhook
 
 Configure Meta to use:
 
@@ -36,24 +43,19 @@ Configure Meta to use:
 GET/POST https://YOUR-HOST/api/v1/webhooks/meta/whatsapp
 ```
 
-Set `META_VERIFY_TOKEN` to the verification token configured in Meta. Set `META_APP_SECRET` to enforce `X-Hub-Signature-256` verification. In development only, signature verification is bypassed when no app secret is configured.
+Set `META_VERIFY_TOKEN` to the verification token configured in Meta. In production, configure `META_APP_SECRET` so WA Connect can enforce `X-Hub-Signature-256` verification.
 
 ## Current architecture
 
 ```text
-Meta WhatsApp Cloud API
-        │
-        ▼
-     FastAPI
-        │
-   ┌────┴────┐
-   ▼         ▼
-MariaDB     Redis
-   │
-   ▼
-Vue Live Inbox (next)
+WhatsApp Cloud API ─┐
+                    ├─> FastAPI ─> MariaDB
+Telegram Bot API ───┘       │
+                            ├─> Redis / delay worker
+                            ├─> Local or S3-compatible media storage
+                            └─> Vue frontend via Nginx gateway
 ```
 
 ## Branch
 
-Current work: `feature/v0.1.0-whatsapp-core`
+Current work: `feature/v0.2.0-telegram-core`
