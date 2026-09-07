@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models import Conversation
 from app.services.flow_runtime import run_flows_for_inbound
-from app.services.inbound_media import prepare_waiting_image_capture, restore_captured_image_field
+from app.services.inbound_media import persist_inbound_chat_media, prepare_waiting_image_capture, restore_captured_image_field
 from app.services.webhook import process_webhook_payload
 from app.services.whatsapp import verify_meta_signature
 
@@ -47,14 +47,18 @@ async def receive_webhook(request:Request,x_hub_signature_256:str|None=Header(de
         try:
             conversation=db.scalar(select(Conversation).where(Conversation.id==inbound_message.conversation_id))
             if conversation:
+                await persist_inbound_chat_media(db,conversation,inbound_message,"whatsapp")
                 capture=await prepare_waiting_image_capture(db,conversation,inbound_message,"whatsapp")
                 routing_value=_flow_reply_value(inbound_message)
                 if routing_value:set_committed_value(inbound_message,"body",routing_value)
                 flows_executed+=await run_flows_for_inbound(db,conversation,inbound_message)
-        except Exception:logger.exception("Flow execution failed for inbound message id=%s",inbound_message.id)
+        except Exception:logger.exception("Media persistence/flow execution failed for inbound message id=%s",inbound_message.id)
         finally:
             if conversation and capture:
                 try:restore_captured_image_field(db,conversation,inbound_message,capture,"whatsapp");db.commit()
                 except Exception:db.rollback();logger.exception("Could not finalize captured WhatsApp image field")
-            else:set_committed_value(inbound_message,"body",original_body)
+            else:
+                set_committed_value(inbound_message,"body",original_body)
+                try:db.commit()
+                except Exception:db.rollback()
     return {"ok":True,"processed":processed,"flows_executed":flows_executed}
