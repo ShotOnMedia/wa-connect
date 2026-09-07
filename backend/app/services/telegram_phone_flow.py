@@ -1,7 +1,7 @@
 """Telegram-native Question flow extensions.
 
-Adds Telegram contact sharing and stable media-answer capture without duplicating
-the core Telegram flow runtime.
+Adds Telegram contact sharing, stable media-answer capture and live-chat snapshots
+of interactive choices without duplicating the core Telegram flow runtime.
 """
 import json
 from contextvars import ContextVar
@@ -16,6 +16,7 @@ _original_send = runtime._send
 _original_validate = runtime._validate
 _original_matching_flows = runtime._matching_flows
 _original_run_inbound = runtime.run_telegram_flows_for_inbound
+_original_interactive = runtime._interactive
 
 _MEDIA_TYPES = {"photo", "video", "voice", "audio", "document", "sticker"}
 
@@ -46,12 +47,7 @@ def _message_from_payload(inbound):
 
 
 def _media_value(inbound):
-    """Return portable Telegram media metadata for a Question answer.
-
-    We deliberately store Telegram's stable file_id/file_unique_id plus the local
-    WA Connect message id. The bot token/file URL is never persisted in a custom
-    field because Telegram download URLs are temporary and contain credentials.
-    """
+    """Return portable Telegram media metadata for a Question answer."""
     kind = str(inbound.message_type or "").strip().lower()
     message = _message_from_payload(inbound)
     media = None
@@ -96,8 +92,6 @@ def _validate(config, inbound):
             return False, None, error or "Telegram did not provide a phone number. Please try again."
         return True, value, None
 
-    # "Any media" accepts all Telegram media types. Specific media reply types
-    # retain the core validator's rules (including audio <-> voice compatibility).
     if reply_type == "media":
         if actual not in _MEDIA_TYPES:
             return False, None, error or "Please reply with a photo, video, audio, document or sticker."
@@ -110,13 +104,7 @@ def _validate(config, inbound):
 
 
 def _matching_flows(db, conversation, inbound):
-    """Match active Telegram flows across connected Telegram bot workspaces.
-
-    FlowChannelTarget is currently the authoritative channel discriminator. The
-    visual builder can create a Telegram flow in one bot workspace while an inbound
-    conversation belongs to another connected Telegram bot workspace, so an exact
-    workspace-only lookup can otherwise miss a valid keyword flow.
-    """
+    """Match active Telegram flows across connected Telegram bot workspaces."""
     matches = _original_matching_flows(db, conversation, inbound)
     if matches:
         return matches
@@ -156,14 +144,63 @@ def _matching_flows(db, conversation, inbound):
     return matches
 
 
+def _interactive_choices(db, conversation, node, by, out, config):
+    """Build the exact labels presented by an Interactive Message at send time."""
+    list_nodes = runtime._choices(by, out, node.id, "list_messages")
+    button_nodes = runtime._choices(by, out, node.id, "buttons")
+    labels = []
+    if str(config.get("row_generation") or "static").lower() == "dynamic":
+        rows = runtime.build_dynamic_rows(db, "telegram", conversation.workspace_id, conversation.contact_id, config, 10)
+        labels = [str(row.get("label") or "Option").strip() for row in rows]
+    elif list_nodes:
+        template = next((x for x in list_nodes if str(runtime._json(x.config_json).get("row_generation") or "static").lower() == "dynamic"), None)
+        if template:
+            tc = runtime._json(template.config_json)
+            rows = runtime.build_dynamic_rows(db, "telegram", conversation.workspace_id, conversation.contact_id, tc, 10)
+            labels = [str(row.get("label") or "Option").strip() for row in rows]
+        else:
+            for item in list_nodes[:10]:
+                cfg = runtime._json(item.config_json)
+                labels.append(runtime._render(db, conversation, cfg.get("label") or item.title or "Option").strip())
+    else:
+        for item in button_nodes:
+            cfg = runtime._json(item.config_json)
+            labels.append(runtime._render(db, conversation, cfg.get("label") or item.title or "Option").strip())
+    return [label for label in labels if label]
+
+
+async def _interactive(db, conversation, node, by, out, config):
+    """Run the core sender, then snapshot the actual choices into chat history.
+
+    The snapshot is deliberately written after sending. It changes only WA Connect's
+    stored display body; the Telegram message itself remains the native inline-keyboard
+    message. Historical messages therefore retain the choices that existed at send time.
+    """
+    labels = _interactive_choices(db, conversation, node, by, out, config)
+    result = await _original_interactive(db, conversation, node, by, out, config)
+    if labels:
+        message = db.scalars(
+            runtime.select(runtime.TelegramMessage)
+            .where(
+                runtime.TelegramMessage.conversation_id == conversation.id,
+                runtime.TelegramMessage.direction == "outbound",
+                runtime.TelegramMessage.message_type == "interactive",
+            )
+            .order_by(runtime.TelegramMessage.id.desc())
+            .limit(1)
+        ).first()
+        if message:
+            prompt = str(message.body or runtime._render(db, conversation, config.get("text") or "Choose an option")).strip()
+            message.body = prompt + "\n\nOptions shown:\n" + "\n".join(f"• {label}" for label in labels)
+            db.flush()
+    return result
+
+
 async def run_telegram_flows_for_inbound(db, conversation, inbound):
     """Give explicit keyword triggers priority over a stale waiting session."""
     session = runtime._session(db, conversation.id)
     message_type = str(getattr(inbound, "message_type", "") or "").strip().lower()
 
-    # Important: call our cross-workspace matcher directly here. Calling
-    # runtime._matching_flows made this wrapper dependent on install/monkey-patch
-    # timing and could leave a waiting subscriber trapped in the old flow.
     if session and session.status == "waiting" and message_type == "text":
         matches = _matching_flows(db, conversation, inbound)
         if matches:
@@ -181,8 +218,6 @@ async def run_telegram_flows_for_inbound(db, conversation, inbound):
             session.updated_at = datetime.utcnow()
             db.flush()
 
-    # The original runtime function reads runtime._matching_flows dynamically, so
-    # after the waiting session is neutralised it will start the matching flow.
     return await _original_run_inbound(db, conversation, inbound)
 
 
@@ -193,6 +228,7 @@ def install():
     runtime._send = _send
     runtime._validate = _validate
     runtime._matching_flows = _matching_flows
+    runtime._interactive = _interactive
     runtime._telegram_phone_flow_installed = True
 
 
