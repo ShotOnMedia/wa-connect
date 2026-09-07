@@ -14,12 +14,14 @@ from app import flow_graph_integrity  # noqa: F401 - registers flow graph integr
 from app import http_api_models  # noqa: F401 - registers reusable HTTP API tables
 from app import developer_api_models  # noqa: F401 - registers Developer API tables
 from app.flow_graph_integrity import repair_flow_start_nodes
+from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # v0.2.0 bootstrap. Alembic owns schema changes; create_all remains temporarily for legacy bootstrap compatibility.
     Base.metadata.create_all(bind=engine)
+    install_flow_http_diagnostics()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
         repair_flow_start_nodes(db)
