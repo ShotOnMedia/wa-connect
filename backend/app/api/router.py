@@ -10,6 +10,7 @@ from app.api.developer_api_body import router as developer_api_body_router
 from app.api.developer_api_external import router as developer_api_external_router
 from app.api.flows import router as flows_router
 from app.api.http_apis import router as http_apis_router
+from app.api.inbound_media import router as inbound_media_router
 from app.api.settings import router as settings_router
 from app.api.telegram import router as telegram_router
 from app.api.telegram_flow_info import router as telegram_flow_info_router
@@ -23,6 +24,7 @@ api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(telegram_webhooks_router)
+api_router.include_router(inbound_media_router)
 # Fixed body-first integration endpoints must be registered before the
 # /subscribers/{subscriber_ref} compatibility routes.
 api_router.include_router(developer_api_actions_router)
