@@ -7,7 +7,6 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import settings
 from app.flow_channel_models import TelegramFlowSession
@@ -105,13 +104,14 @@ async def prepare_waiting_image_capture(db:Session,conversation,inbound,channel:
     if not captured:return None
     url,target_field_id=captured;_save_url(db,conversation,_image_field(db,conversation.workspace_id,target_field_id),url,channel);capture={"url":url,"field_id":target_field_id,"body":inbound.body,"payload_json":inbound.payload_json}
     if channel=="telegram":
-        # Keep the persisted Live Chat message as Telegram media metadata, but
-        # expose the durable stored URL to the flow runtime for this request.
-        setattr(inbound,"_captured_image_url",url);set_committed_value(inbound,"body",url)
+        # Make the durable URL the actual runtime answer. A normal ORM assignment
+        # keeps it stable even when flow execution performs queries/flushes.
+        # The webhook handler restores the original Live Chat media body afterward.
+        inbound._captured_image_url=url;inbound.body=url
     else:
         try:payload=json.loads(inbound.payload_json or "{}")
         except (TypeError,json.JSONDecodeError):payload={}
-        image=payload.get("image") or {};image["id"]=url;payload["image"]=image;set_committed_value(inbound,"payload_json",json.dumps(payload,ensure_ascii=False))
+        image=payload.get("image") or {};image["id"]=url;payload["image"]=image;inbound.payload_json=json.dumps(payload,ensure_ascii=False)
     return capture
 
 def restore_captured_image_field(db:Session,conversation,inbound,capture,channel:str):
@@ -119,4 +119,4 @@ def restore_captured_image_field(db:Session,conversation,inbound,capture,channel
     field=_image_field(db,conversation.workspace_id,capture.get("field_id"))
     if field:_save_url(db,conversation,field,capture["url"],channel)
     if hasattr(inbound,"_captured_image_url"):delattr(inbound,"_captured_image_url")
-    set_committed_value(inbound,"body",capture.get("body"));set_committed_value(inbound,"payload_json",capture.get("payload_json"))
+    inbound.body=capture.get("body");inbound.payload_json=capture.get("payload_json");db.flush()
