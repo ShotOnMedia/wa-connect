@@ -11,13 +11,25 @@ def start_submission(db,flow,conversation,campaign_node,channel,config):
 def active_submission(db,flow_id,conversation_id,channel):
     return db.scalar(select(UserInputSubmission).where(UserInputSubmission.flow_id==flow_id,UserInputSubmission.conversation_id==conversation_id,UserInputSubmission.channel==channel,UserInputSubmission.status=='active').order_by(UserInputSubmission.id.desc()))
 
-def _answer_key(question_node,config):
-    explicit=str(config.get('answer_key') or config.get('field_key') or '').strip()
-    if explicit:return explicit[:120]
+def _clean_key(value):
+    key=re.sub(r'[^a-z0-9_.-]+','_',str(value or '').casefold()).strip('_')
+    return key[:120]
+
+def _answer_key(db,question_node,config):
+    explicit=_clean_key(config.get('answer_key') or config.get('field_key'))
+    if explicit:return explicit
+    # A Question that persists to a custom field already has a stable, reusable key.
+    # Prefer it over presentation text so webhook/API contracts do not depend on titles.
+    field_id=config.get('capture_field_id') or config.get('save_reply_field_id')
+    if field_id:
+        from app.models import ContactFieldDefinition
+        field=db.get(ContactFieldDefinition,int(field_id))
+        field_key=_clean_key(getattr(field,'key','') if field else '')
+        if field_key:return field_key
     title=str(getattr(question_node,'title','') or '').strip()
     if title and title.casefold()!='question':
-        key=re.sub(r'[^a-z0-9_.-]+','_',title.casefold()).strip('_')
-        if key:return key[:120]
+        key=_clean_key(title)
+        if key:return key
     return f'question_{question_node.id}'
 
 def _answer_value(config,value):
@@ -31,7 +43,7 @@ def _answer_value(config,value):
     return text
 
 def record_answer(db,submission,question_node,config,value):
-    key=_answer_key(question_node,config)
+    key=_answer_key(db,question_node,config)
     row=UserInputAnswer(submission_id=submission.id,question_node_id=question_node.id,answer_key=key,question_text=config.get('text'),value_text=_answer_value(config,value));db.add(row);db.flush();return row
 
 async def complete_submission(db,submission,campaign_config=None):
