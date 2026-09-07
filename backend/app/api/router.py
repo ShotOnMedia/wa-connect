@@ -5,6 +5,7 @@ from app.api.contact_fields import router as contact_fields_router
 from app.api.contacts import router as contacts_router
 from app.api.conversations import router as conversations_router
 from app.api.developer_api import admin_router as developer_api_admin_router
+from app.api.developer_api_actions import router as developer_api_actions_router
 from app.api.developer_api_body import router as developer_api_body_router
 from app.api.developer_api_external import router as developer_api_external_router
 from app.api.flows import router as flows_router
@@ -22,6 +23,7 @@ api_router.include_router(webhooks_router)
 api_router.include_router(telegram_webhooks_router)
 # Fixed body-first integration endpoints must be registered before the
 # /subscribers/{subscriber_ref} compatibility routes.
+api_router.include_router(developer_api_actions_router)
 api_router.include_router(developer_api_body_router)
 api_router.include_router(developer_api_external_router)
 api_router.include_router(developer_api_admin_router)
