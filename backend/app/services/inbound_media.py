@@ -27,6 +27,15 @@ def _public_base_url() -> str:
         if value.startswith("https://"):return value
     return ""
 
+def _normalise_image_type(content_type:str|None,file_path:str|None=None)->str:
+    mime=str(content_type or "").split(";",1)[0].strip().lower()
+    # Telegram's file endpoint commonly serves photos as application/octet-stream.
+    # The webhook has already established that this is a photo, so infer the MIME
+    # type from Telegram's file path rather than rejecting the generic header.
+    if not mime or mime=="application/octet-stream":
+        guessed,_=mimetypes.guess_type(str(file_path or ""));mime=str(guessed or "image/jpeg").lower()
+    return mime
+
 def _extension(content_type:str|None,fallback:str=".jpg")->str:
     mime=str(content_type or "").split(";",1)[0].strip().lower();known={"image/jpeg":".jpg","image/png":".png","image/webp":".webp","image/gif":".gif","image/heic":".heic","image/heif":".heif"};return known.get(mime) or mimetypes.guess_extension(mime) or fallback
 
@@ -74,7 +83,7 @@ async def capture_image_field_value(db:Session,conversation,inbound,field_id,cha
             if not file_path:raise TelegramError("Telegram did not return a file path")
             content,content_type=await download_file(conversation.bot.access_token,file_path)
         except TelegramError as exc:raise RuntimeError(f"Could not store incoming Telegram image: {exc}") from exc
-        return _store_image(content,content_type or "image/jpeg"),field.id
+        return _store_image(content,_normalise_image_type(content_type,file_path)),field.id
     if channel=="whatsapp":
         if str(inbound.message_type or "").lower()!="image":raise RuntimeError("Image custom fields can only capture an incoming WhatsApp image")
         image=payload.get("image") or {};media_id=image.get("id")
