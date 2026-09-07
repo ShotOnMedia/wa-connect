@@ -15,7 +15,7 @@ class MessageStatus(str, Enum):
 class UserRole(str, Enum):
     ADMIN="admin"; MANAGER="manager"; AGENT="agent"
 class ContactFieldType(str, Enum):
-    TEXT="text"; TEXTAREA="textarea"; EMAIL="email"; NUMBER="number"; DATE="date"; SELECT="select"; CHECKBOX="checkbox"
+    TEXT="text"; TEXTAREA="textarea"; EMAIL="email"; NUMBER="number"; DATE="date"; SELECT="select"; CHECKBOX="checkbox"; IMAGE="image"
 
 class User(Base):
     __tablename__="users"
