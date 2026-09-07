@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 import httpx
 from sqlalchemy import select
@@ -10,8 +11,17 @@ def start_submission(db,flow,conversation,campaign_node,channel,config):
 def active_submission(db,flow_id,conversation_id,channel):
     return db.scalar(select(UserInputSubmission).where(UserInputSubmission.flow_id==flow_id,UserInputSubmission.conversation_id==conversation_id,UserInputSubmission.channel==channel,UserInputSubmission.status=='active').order_by(UserInputSubmission.id.desc()))
 
+def _answer_key(question_node,config):
+    explicit=str(config.get('answer_key') or config.get('field_key') or '').strip()
+    if explicit:return explicit[:120]
+    title=str(getattr(question_node,'title','') or '').strip()
+    if title and title.casefold()!='question':
+        key=re.sub(r'[^a-z0-9_.-]+','_',title.casefold()).strip('_')
+        if key:return key[:120]
+    return f'question_{question_node.id}'
+
 def record_answer(db,submission,question_node,config,value):
-    key=str(config.get('answer_key') or config.get('field_key') or f'question_{question_node.id}')[:120]
+    key=_answer_key(question_node,config)
     row=UserInputAnswer(submission_id=submission.id,question_node_id=question_node.id,answer_key=key,question_text=config.get('text'),value_text=None if value is None else str(value));db.add(row);db.flush();return row
 
 async def complete_submission(db,submission,campaign_config=None):
