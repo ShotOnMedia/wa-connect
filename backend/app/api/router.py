@@ -12,6 +12,7 @@ from app.api.flows import router as flows_router
 from app.api.http_apis import router as http_apis_router
 from app.api.settings import router as settings_router
 from app.api.telegram import router as telegram_router
+from app.api.telegram_flow_info import router as telegram_flow_info_router
 from app.api.telegram_webhooks import router as telegram_webhooks_router
 from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
@@ -34,4 +35,5 @@ api_router.include_router(flows_router, dependencies=[Depends(require_user)])
 api_router.include_router(http_apis_router)
 api_router.include_router(settings_router, dependencies=[Depends(require_user)])
 api_router.include_router(telegram_router)
+api_router.include_router(telegram_flow_info_router)
 api_router.include_router(users_router, dependencies=[Depends(require_user)])
