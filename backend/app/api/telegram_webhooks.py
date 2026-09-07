@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.services.inbound_media import prepare_waiting_image_capture, restore_captured_image_field
+from app.services.inbound_media import persist_inbound_chat_media, prepare_waiting_image_capture, restore_captured_image_field
 from app.services.system_fields import sync_telegram_system_fields
 from app.services.telegram import answer_callback
 from app.services.telegram_phone_flow import run_telegram_flows_for_inbound
@@ -84,8 +84,9 @@ async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api
     message_type,body=detect_message_type(message);timestamp=datetime.utcfromtimestamp(message["date"]) if message.get("date") else datetime.utcnow();inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(telegram_message_id),direction="inbound",message_type=message_type,body=body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
     db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;capture=None
     try:
+        await persist_inbound_chat_media(db,conversation,inbound,"telegram")
         capture=await prepare_waiting_image_capture(db,conversation,inbound,"telegram");flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
-    except Exception:db.rollback();logger.exception("Telegram flow runtime failed conversation=%s inbound=%s",conversation.id,inbound.id)
+    except Exception:db.rollback();logger.exception("Telegram media persistence/flow runtime failed conversation=%s inbound=%s",conversation.id,inbound.id)
     finally:
         if capture:
             try:restore_captured_image_field(db,conversation,inbound,capture,"telegram");db.commit()
