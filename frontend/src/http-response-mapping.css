@@ -1,25 +1,27 @@
-/* HTTP API response mapping panel polish.
-   Kept separate so the compact right-column editor stays readable without
-   disturbing the rest of the HTTP API screen. */
-.mapping-card{padding:18px!important;overflow:visible!important}
-.mapping-card .mapping-head{display:block!important;margin-bottom:14px}
-.mapping-card .mapping-head h2{margin:0 0 5px!important;font-size:18px!important}
-.mapping-card .mapping-head p{margin:0!important;line-height:1.45;font-size:13px;color:#71847b!important}
-.mapping-card .mapping-actions{display:grid!important;grid-template-columns:1fr 1fr;gap:8px!important;margin-top:13px}
-.mapping-card .mapping-actions button{min-width:0;padding:9px 8px;border:1px solid #cfe0d7;border-radius:8px;background:#fff;color:#176b49;font-weight:700;font-size:12px;white-space:nowrap}
+/* HTTP API response mapping panel — mockup-inspired layout. */
+.mapping-card{padding:20px!important;overflow:visible!important;border-radius:14px!important}
+.mapping-card .mapping-head{display:block!important;margin-bottom:16px}
+.mapping-card .mapping-head h2{margin:0 0 6px!important;font-size:18px!important}
+.mapping-card .mapping-head p{margin:0!important;line-height:1.5;font-size:13px;color:#71847b!important}
+.mapping-card .mapping-head:after{content:'Use JSON paths such as $.reference to pick values from the API response.';display:block;margin-top:14px;padding:12px 13px;border:1px solid #cfe8dc;border-radius:9px;background:#f1faf5;color:#537267;font-size:12px;line-height:1.45}
+.mapping-card .mapping-actions{display:flex!important;justify-content:space-between;align-items:center;gap:8px!important;margin:14px 0 4px}
+.mapping-card .mapping-actions button{padding:8px 11px;border:1px solid #cfe0d7;border-radius:8px;background:#fff;color:#176b49;font-weight:700;font-size:12px;white-space:nowrap}
+.mapping-card .mapping-actions button:last-child{margin-left:auto}
 .mapping-card .mapping-actions button:hover{background:#f3faf6;border-color:#a9d5bf}
-.mapping-card .root-map{display:grid!important;grid-template-columns:1fr;gap:8px;margin:12px 0!important;padding:11px!important;border:1px solid #cde7d9;background:#f2faf6!important;border-radius:9px!important}
+.mapping-card .root-map{display:grid!important;grid-template-columns:1fr;gap:8px;margin:12px 0!important;padding:12px!important;border:1px solid #cde7d9;background:#f2faf6!important;border-radius:9px!important}
 .mapping-card .root-map strong{font-size:12px;color:#244b3a}
 .mapping-card .root-map button{width:100%;padding:8px;border:1px solid #b9dccb;border-radius:7px;background:#fff;color:#168653;font-size:12px;font-weight:700}
-.mapping-card .mapping-note{margin:12px 0!important;padding:11px!important;border:1px solid #e1ebe6;background:#f7faf8!important;border-radius:9px!important;color:#708178;font-size:12px;line-height:1.45}
-.mapping-card .mapping-row{display:grid!important;grid-template-columns:1fr!important;gap:7px!important;align-items:stretch!important;margin:12px 0 0!important;padding:12px!important;border:1px solid #dce8e1;border-radius:10px;background:#fbfdfc;position:relative}
+.mapping-card .mapping-note{margin:12px 0!important;padding:12px!important;border:1px solid #dce8e3;background:#f5f8f7!important;border-radius:9px!important;color:#708178;font-size:12px;line-height:1.45}
+.mapping-card .mapping-note:before{content:'Tip  ';font-weight:800;color:#47645a}
+.mapping-card .mapping-row{display:grid!important;grid-template-columns:1fr!important;gap:9px!important;align-items:stretch!important;margin:12px 0 0!important;padding:12px!important;border:1px solid #dce8e1;border-radius:10px;background:#fff;position:relative}
 .mapping-card .mapping-row>span{display:none}
-.mapping-card .mapping-row>label{display:grid!important;gap:5px!important;margin:0!important;font-size:11px!important;font-weight:800!important;color:#52675d}
+.mapping-card .mapping-row>label{display:grid!important;gap:6px!important;margin:0!important;font-size:11px!important;font-weight:800!important;color:#52675d}
 .mapping-card .mapping-row>label:first-child:after{content:'↓';display:block;text-align:center;color:#8ba198;font-size:14px;line-height:10px;margin-top:2px}
-.mapping-card .mapping-row input{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px!important;border-radius:8px!important;font-size:12px!important}
+.mapping-card .mapping-row input{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px!important;border-radius:8px!important;font-size:12px!important;background:#fff!important}
 .mapping-card .field-target{display:grid!important;grid-template-columns:minmax(0,1fr) 34px;gap:6px!important}
 .mapping-card .field-target button{width:34px;padding:0!important;border:1px solid #cfe0d7;border-radius:8px;background:#f3faf6;color:#168653;font-weight:800}
 .mapping-card .mapping-row>button:last-child{position:absolute;top:8px;right:8px;width:27px;height:27px;padding:0;border:0;border-radius:7px;background:#fff0f0;color:#c34a4a;font-size:16px;line-height:27px}
 .mapping-card .mapping-row>label:first-child{padding-right:31px}
-.mapping-card>.save{margin-top:14px!important;height:42px;border-radius:9px!important}
-@media(max-width:1000px){.mapping-card .mapping-actions{grid-template-columns:repeat(2,minmax(0,180px));justify-content:start}.mapping-card .mapping-row{grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr) 32px!important;align-items:end!important}.mapping-card .mapping-row>span{display:block;text-align:center;padding-bottom:11px}.mapping-card .mapping-row>label:first-child{padding-right:0}.mapping-card .mapping-row>label:first-child:after{display:none}.mapping-card .mapping-row>button:last-child{position:static;width:32px;height:38px;line-height:38px}}
+.mapping-card>.save{margin-top:16px!important;height:44px;border-radius:9px!important;font-size:13px!important}
+@media(min-width:1250px){.editor-grid{grid-template-columns:minmax(0,1fr) 360px!important}.mapping-card .mapping-row{padding:14px!important}.mapping-card .mapping-actions button{padding:9px 13px}}
+@media(max-width:1000px){.mapping-card .mapping-actions{justify-content:flex-start}.mapping-card .mapping-actions button:last-child{margin-left:0}.mapping-card .mapping-row{grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr) 32px!important;align-items:end!important}.mapping-card .mapping-row>span{display:block;text-align:center;padding-bottom:11px}.mapping-card .mapping-row>label:first-child{padding-right:0}.mapping-card .mapping-row>label:first-child:after{display:none}.mapping-card .mapping-row>button:last-child{position:static;width:32px;height:38px;line-height:38px}}
