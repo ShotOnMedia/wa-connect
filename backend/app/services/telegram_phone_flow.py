@@ -5,6 +5,7 @@ the core Telegram flow runtime.
 """
 import json
 from contextvars import ContextVar
+from datetime import datetime
 
 from app.services import telegram_flow_runtime as runtime
 from app.services.telegram import request_phone_number
@@ -13,6 +14,7 @@ _current_config: ContextVar[dict] = ContextVar("telegram_flow_config", default={
 _original_json = runtime._json
 _original_send = runtime._send
 _original_validate = runtime._validate
+_original_run_inbound = runtime.run_telegram_flows_for_inbound
 
 _MEDIA_TYPES = {"photo", "video", "voice", "audio", "document", "sticker"}
 
@@ -106,6 +108,29 @@ def _validate(config, inbound):
     return result
 
 
+async def run_telegram_flows_for_inbound(db, conversation, inbound):
+    """Give explicit keyword triggers priority over a stale waiting session.
+
+    A subscriber can otherwise become trapped at a Question/Button/Location wait:
+    any text is treated as an attempted answer, so sending a known flow keyword
+    never reaches the normal trigger matcher. If an inbound text message exactly
+    matches an active Telegram keyword flow, reset the current waiting session and
+    let the standard runtime start the matching flow from its trigger node.
+    """
+    session = runtime._session(db, conversation.id)
+    message_type = str(getattr(inbound, "message_type", "") or "").strip().lower()
+    if session and session.status == "waiting" and message_type == "text":
+        matches = runtime._matching_flows(db, conversation, inbound)
+        if matches:
+            session.status = "reset"
+            session.current_node_id = None
+            session.waiting_for = None
+            session.ended_at = datetime.utcnow()
+            session.updated_at = datetime.utcnow()
+            db.flush()
+    return await _original_run_inbound(db, conversation, inbound)
+
+
 def install():
     if getattr(runtime, "_telegram_phone_flow_installed", False):
         return
@@ -116,4 +141,3 @@ def install():
 
 
 install()
-run_telegram_flows_for_inbound = runtime.run_telegram_flows_for_inbound
