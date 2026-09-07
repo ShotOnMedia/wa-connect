@@ -7,13 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.services.inbound_media import prepare_waiting_image_capture, restore_captured_image_field
 from app.services.system_fields import sync_telegram_system_fields
 from app.services.telegram import answer_callback
 from app.services.telegram_phone_flow import run_telegram_flows_for_inbound
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
-router=APIRouter(prefix="/webhooks/telegram",tags=["Telegram webhooks"]); logger=logging.getLogger(__name__)
-
+router=APIRouter(prefix="/webhooks/telegram",tags=["Telegram webhooks"]);logger=logging.getLogger(__name__)
 
 def detect_message_type(message:dict)->tuple[str,str|None]:
     if "text" in message:return "text",message.get("text")
@@ -28,9 +28,7 @@ def detect_message_type(message:dict)->tuple[str,str|None]:
     if "contact" in message:return "contact",(message.get("contact") or {}).get("phone_number")
     return "unknown",None
 
-
 def _callback_label(message:dict,data:str)->str:
-    """Return the human-facing Telegram button label while keeping callback data in payload_json."""
     markup=(message or {}).get("reply_markup") or {}
     for row in markup.get("inline_keyboard") or []:
         for button in row or []:
@@ -39,21 +37,16 @@ def _callback_label(message:dict,data:str)->str:
                 if label:return label
     return data
 
-
 def _upsert_contact_conversation(db,bot,sender,chat):
     sender_id=sender.get("id");chat_id=chat.get("id")
     if sender_id is None or chat_id is None:return None,None
     contact=db.scalar(select(TelegramContact).where(TelegramContact.workspace_id==bot.workspace_id,TelegramContact.telegram_user_id==int(sender_id)))
-    if not contact:
-        contact=TelegramContact(workspace_id=bot.workspace_id,telegram_user_id=int(sender_id));db.add(contact);db.flush()
-    contact.username=sender.get("username");contact.first_name=sender.get("first_name");contact.last_name=sender.get("last_name");contact.language_code=sender.get("language_code")
-    sync_telegram_system_fields(db,contact)
+    if not contact:contact=TelegramContact(workspace_id=bot.workspace_id,telegram_user_id=int(sender_id));db.add(contact);db.flush()
+    contact.username=sender.get("username");contact.first_name=sender.get("first_name");contact.last_name=sender.get("last_name");contact.language_code=sender.get("language_code");sync_telegram_system_fields(db,contact)
     conversation=db.scalar(select(TelegramConversation).where(TelegramConversation.telegram_bot_id==bot.id,TelegramConversation.chat_id==int(chat_id)))
-    if not conversation:
-        conversation=TelegramConversation(workspace_id=bot.workspace_id,telegram_bot_id=bot.id,contact_id=contact.id,chat_id=int(chat_id),chat_type=chat.get("type") or "private",status="open");db.add(conversation);db.flush()
+    if not conversation:conversation=TelegramConversation(workspace_id=bot.workspace_id,telegram_bot_id=bot.id,contact_id=contact.id,chat_id=int(chat_id),chat_type=chat.get("type") or "private",status="open");db.add(conversation);db.flush()
     else:conversation.contact_id=contact.id
     return contact,conversation
-
 
 @router.post("/{bot_id}")
 async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api_secret_token:str|None=Header(default=None),db:Session=Depends(get_db)):
@@ -71,9 +64,7 @@ async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api
         synthetic_id=-abs(update_id or int(datetime.utcnow().timestamp()*1000));existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==synthetic_id))
         if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
         timestamp=datetime.utcnow();display_body=_callback_label(source_message,data);inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=synthetic_id,direction="inbound",message_type="button",body=display_body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
-        db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0
-        # The flow runtime needs the technical callback token for routing, while Live Chat should keep the friendly label.
-        inbound.body=data
+        db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;inbound.body=data
         try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);inbound.body=display_body;db.commit()
         except Exception:
             db.rollback();logger.exception("Telegram callback flow execution failed conversation=%s data=%r",conversation.id,data)
@@ -89,11 +80,14 @@ async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api
     existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==int(telegram_message_id)))
     if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
     if contact:
-        phone=(message.get("contact") or {}).get("phone_number") if "contact" in message else None
-        location=message.get("location") if "location" in message else None
-        sync_telegram_system_fields(db,contact,phone_number=phone,location=location)
+        phone=(message.get("contact") or {}).get("phone_number") if "contact" in message else None;location=message.get("location") if "location" in message else None;sync_telegram_system_fields(db,contact,phone_number=phone,location=location)
     message_type,body=detect_message_type(message);timestamp=datetime.utcfromtimestamp(message["date"]) if message.get("date") else datetime.utcnow();inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(telegram_message_id),direction="inbound",message_type=message_type,body=body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
-    db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0
-    try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
+    db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;capture=None
+    try:
+        capture=await prepare_waiting_image_capture(db,conversation,inbound,"telegram");flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
     except Exception:db.rollback();logger.exception("Telegram flow runtime failed conversation=%s inbound=%s",conversation.id,inbound.id)
+    finally:
+        if capture:
+            try:restore_captured_image_field(db,conversation,inbound,capture,"telegram");db.commit()
+            except Exception:db.rollback();logger.exception("Could not finalize captured Telegram image field")
     return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed}
