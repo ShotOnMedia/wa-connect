@@ -3,8 +3,9 @@ import './live-chat-extras.css'
 
 let currentKey = ''
 let renderToken = 0
+let decoratedSignature = ''
 
-function esc(value=''){return String(value).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]))}
+function esc(value=''){return String(value).replace(/[&<>\"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[ch]))}
 function selectedWaId(panel){
   const candidates=[...panel.querySelectorAll('p,span')].map(el=>el.textContent.trim()).filter(Boolean)
   return candidates.find(v=>/^\+?\d{7,}$/.test(v.replace(/[\s-]/g,'')))?.replace(/[\s+-]/g,'')||''
@@ -19,14 +20,37 @@ function fieldInput(field){
 }
 function readField(root,field){const el=root.querySelector(`#lc-field-${field.id}`);return field.field_type==='checkbox'?el.checked:el.value}
 
+async function decorateInteractiveMessages(conversationId){
+  const bubbles=[...document.querySelectorAll('.shell:not(.wide-view) .messages .bubble')]
+  const signature=`${conversationId}:${bubbles.length}`
+  if(signature===decoratedSignature)return
+  const items=await api.messages(conversationId).catch(()=>[])
+  if(items.length!==bubbles.length)return
+  decoratedSignature=signature
+  items.forEach((message,index)=>{
+    const bubble=bubbles[index]
+    bubble.querySelector('.lc-interactive-snapshot')?.remove()
+    if(message.direction!=='outbound'||message.message_type!=='interactive'||!message.payload_json)return
+    let payload={}
+    try{payload=JSON.parse(message.payload_json||'{}')}catch(_){return}
+    const snap=payload?._wa_connect
+    if(!snap||snap.kind!=='interactive_snapshot'||!Array.isArray(snap.options)||!snap.options.length)return
+    const box=document.createElement('div');box.className='lc-interactive-snapshot'
+    box.innerHTML=`<div class="lc-interactive-label">Interactive</div><strong>${esc(snap.title||message.body||'Choose an option')}</strong><div class="lc-interactive-options">${snap.options.map(option=>`<div class="lc-interactive-option"><b>${esc(option.label||'Option')}</b>${option.description?`<span>${esc(option.description)}</span>`:''}</div>`).join('')}</div>`
+    const p=bubble.querySelector('p');if(p)p.hidden=true
+    bubble.insertBefore(box,bubble.querySelector('footer'))
+  })
+}
+
 async function renderExtras(){
   const panel=document.querySelector('.shell:not(.wide-view) .contact-panel')
   if(!panel)return
   const waId=selectedWaId(panel)
-  if(!waId){currentKey='';panel.querySelector('.live-chat-extras')?.remove();return}
+  if(!waId){currentKey='';decoratedSignature='';panel.querySelector('.live-chat-extras')?.remove();return}
   const conversations=await api.conversations('all').catch(()=>[])
   const conversation=conversations.find(c=>String(c.contact?.wa_id||'').replace(/\D/g,'')===waId.replace(/\D/g,''))
   if(!conversation)return
+  await decorateInteractiveMessages(conversation.id)
   const key=`${conversation.id}:${conversation.contact.id}`
   if(currentKey===key&&panel.querySelector('.live-chat-extras'))return
   currentKey=key;const token=++renderToken
