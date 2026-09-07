@@ -5,15 +5,15 @@ from sqlalchemy.orm import Session
 from app.flow_channel_models import FlowChannelTarget,TelegramFlowSession
 from app.flow_models import Flow,FlowEdge,FlowNode,FlowNodeType,FlowStatus,FlowTriggerType
 from app.http_api_models import HttpApi
-from app.models import ContactFieldDefinition
 from app.services.dynamic_lists import build_dynamic_rows,save_dynamic_selection
 from app.services.flow_delay import schedule_delay
 from app.services.flow_tracking import complete as track_complete,event as track_event,fail as track_fail,latest_open_run,start_run
+from app.services.flow_variables import render_telegram
 from app.services.http_api_executor import execute_http_api
 from app.services.telegram import TelegramError,request_location,send_buttons,send_location,send_media,send_product_card,send_text
 from app.services.telegram_flow_actions import assign_user,change_tag,condition_result,set_field,set_status
 from app.services.user_input import active_submission,campaign_for_submission,complete_submission,record_answer,start_submission
-from app.telegram_models import TelegramContactFieldValue,TelegramConversation,TelegramMessage
+from app.telegram_models import TelegramConversation,TelegramMessage
 logger=logging.getLogger(__name__)
 def _json(v):
     if isinstance(v,dict):return v
@@ -32,10 +32,7 @@ def _graph(db,fid):
 def _next(by,out,nid,h='next'):
     es=[e for e in out.get(nid,[]) if e.source_handle==h];return by.get(es[0].target_node_id) if es else None
 def _choices(by,out,nid,h):return[by[e.target_node_id] for e in out.get(nid,[]) if e.source_handle==h and e.target_node_id in by and _enum(by[e.target_node_id].node_type)==FlowNodeType.BUTTON.value]
-def _render(db,c,text):
-    value=str(text or '');keys=set(re.findall(r'%([A-Za-z0-9_.-]+)%',value))
-    if not keys:return value
-    rows=db.execute(select(ContactFieldDefinition.key,TelegramContactFieldValue.value_text).outerjoin(TelegramContactFieldValue,(TelegramContactFieldValue.field_id==ContactFieldDefinition.id)&(TelegramContactFieldValue.contact_id==c.contact_id)).where(ContactFieldDefinition.workspace_id==c.workspace_id,ContactFieldDefinition.key.in_(keys))).all();vals={str(k):(v or '') for k,v in rows};return re.sub(r'%([A-Za-z0-9_.-]+)%',lambda m:str(vals.get(m.group(1),'')),value)
+def _render(db,c,text):return render_telegram(db,c,text)
 def _store(db,c,r,kind,body=None):
     ts=datetime.utcfromtimestamp(r['date']) if r.get('date') else datetime.utcnow();db.add(TelegramMessage(conversation_id=c.id,telegram_message_id=int(r['message_id']),direction='outbound',message_type=kind,body=body,payload_json=json.dumps(r,ensure_ascii=False),status='sent',telegram_timestamp=ts));c.last_message_at=ts;db.flush()
 async def _send(db,c,text):
@@ -118,7 +115,11 @@ async def _run_from(db,f,c,i,s,n,by,out):
             if cfg.get('field_id'):set_field(db,c,int(cfg['field_id']),_render(db,c,cfg.get('value')))
         elif k==FlowNodeType.ASSIGN_USER.value:assign_user(db,c,cfg.get('user_id'))
         elif k==FlowNodeType.SET_STATUS.value:set_status(db,c,cfg.get('status'))
-        elif k==FlowNodeType.CONDITION.value:n=_next(by,out,n.id,'yes' if condition_result(db,c,cfg) else 'no');continue
+        elif k==FlowNodeType.CONDITION.value:
+            rendered=dict(cfg)
+            for key in ('value','compare_value','field_key','key'):
+                if key in rendered:rendered[key]=_render(db,c,rendered[key])
+            n=_next(by,out,n.id,'yes' if condition_result(db,c,rendered) else 'no');continue
         elif k==FlowNodeType.DELAY.value:
             resume=_next(by,out,n.id);schedule_delay(db,'telegram',f.id,c.id,n.id,resume.id if resume else None,cfg);s.status='waiting';s.waiting_for='delay';db.flush();return True
         n=_next(by,out,n.id)
