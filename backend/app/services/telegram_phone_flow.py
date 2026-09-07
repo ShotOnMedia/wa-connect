@@ -110,14 +110,12 @@ def _validate(config, inbound):
 
 
 def _matching_flows(db, conversation, inbound):
-    """Match Telegram flows even when the flow and bot use different workspaces.
+    """Match active Telegram flows across connected Telegram bot workspaces.
 
-    Telegram flows are channel-targeted, but the current UI can create them against
-    the first active Telegram bot workspace. A conversation from another connected
-    bot therefore used to miss the flow because the core matcher also required an
-    exact workspace_id match. Until bot-specific flow targeting exists, Telegram
-    flows are shared across connected Telegram bot workspaces and the channel target
-    is the authoritative discriminator.
+    FlowChannelTarget is currently the authoritative channel discriminator. The
+    visual builder can create a Telegram flow in one bot workspace while an inbound
+    conversation belongs to another connected Telegram bot workspace, so an exact
+    workspace-only lookup can otherwise miss a valid keyword flow.
     """
     matches = _original_matching_flows(db, conversation, inbound)
     if matches:
@@ -159,25 +157,32 @@ def _matching_flows(db, conversation, inbound):
 
 
 async def run_telegram_flows_for_inbound(db, conversation, inbound):
-    """Give explicit keyword triggers priority over a stale waiting session.
-
-    A subscriber can otherwise become trapped at a Question/Button/Location wait:
-    any text is treated as an attempted answer, so sending a known flow keyword
-    never reaches the normal trigger matcher. If an inbound text message exactly
-    matches an active Telegram keyword flow, reset the current waiting session and
-    let the standard runtime start the matching flow from its trigger node.
-    """
+    """Give explicit keyword triggers priority over a stale waiting session."""
     session = runtime._session(db, conversation.id)
     message_type = str(getattr(inbound, "message_type", "") or "").strip().lower()
+
+    # Important: call our cross-workspace matcher directly here. Calling
+    # runtime._matching_flows made this wrapper dependent on install/monkey-patch
+    # timing and could leave a waiting subscriber trapped in the old flow.
     if session and session.status == "waiting" and message_type == "text":
-        matches = runtime._matching_flows(db, conversation, inbound)
+        matches = _matching_flows(db, conversation, inbound)
         if matches:
+            runtime.logger.info(
+                "Telegram keyword restart matched flow_ids=%s conversation=%s previous_flow=%s waiting_for=%s",
+                [flow.id for flow in matches],
+                conversation.id,
+                session.flow_id,
+                session.waiting_for,
+            )
             session.status = "reset"
             session.current_node_id = None
             session.waiting_for = None
             session.ended_at = datetime.utcnow()
             session.updated_at = datetime.utcnow()
             db.flush()
+
+    # The original runtime function reads runtime._matching_flows dynamically, so
+    # after the waiting session is neutralised it will start the matching flow.
     return await _original_run_inbound(db, conversation, inbound)
 
 
