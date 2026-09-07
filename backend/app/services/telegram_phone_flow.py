@@ -99,6 +99,12 @@ def _validate(config, inbound):
 
     result = _original_validate(config, inbound)
     if result[0] and actual in _MEDIA_TYPES:
+        # Image-field ingestion has already downloaded Telegram photos and attached
+        # the durable WA Connect URL. Do not replace that URL with Telegram file
+        # metadata in this extension validator. Other media types retain metadata.
+        captured_url = getattr(inbound, "_captured_image_url", None)
+        if actual == "photo" and captured_url:
+            return True, captured_url, None
         return True, _media_value(inbound), None
     return result
 
