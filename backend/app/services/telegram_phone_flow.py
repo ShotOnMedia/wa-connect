@@ -99,13 +99,12 @@ def _validate(config, inbound):
 
     result = _original_validate(config, inbound)
     if result[0] and actual in _MEDIA_TYPES:
-        # Image-field ingestion has already downloaded Telegram photos and attached
-        # the durable WA Connect URL. Do not replace that URL with Telegram file
-        # metadata in this extension validator. Other media types retain metadata.
         captured_url = getattr(inbound, "_captured_image_url", None)
         if actual == "photo" and captured_url:
             return True, captured_url, None
         return True, _media_value(inbound), None
+    if not result[0] and reply_type in {"image", "photo"} and not error:
+        return False, None, "Please send a photo or image."
     return result
 
 
@@ -176,12 +175,7 @@ def _interactive_choices(db, conversation, node, by, out, config):
 
 
 async def _interactive(db, conversation, node, by, out, config):
-    """Run the core sender, then snapshot the actual choices into chat history.
-
-    The snapshot is deliberately written after sending. It changes only WA Connect's
-    stored display body; the Telegram message itself remains the native inline-keyboard
-    message. Historical messages therefore retain the choices that existed at send time.
-    """
+    """Run the core sender, then snapshot the actual choices into chat history."""
     labels = _interactive_choices(db, conversation, node, by, out, config)
     result = await _original_interactive(db, conversation, node, by, out, config)
     if labels:
@@ -203,26 +197,55 @@ async def _interactive(db, conversation, node, by, out, config):
 
 
 async def run_telegram_flows_for_inbound(db, conversation, inbound):
-    """Give explicit keyword triggers priority over a stale waiting session."""
+    """Resume a valid waiting interaction before considering keyword restarts.
+
+    A Question owns the next inbound message while it is waiting for a reply. This is
+    essential for validation: wrong input must be rejected by that Question instead of
+    being diverted into trigger matching. Keyword restart remains available only when
+    the saved waiting session is stale or no longer points at the expected node type.
+    """
     session = runtime._session(db, conversation.id)
     message_type = str(getattr(inbound, "message_type", "") or "").strip().lower()
 
-    if session and session.status == "waiting" and message_type == "text":
-        matches = _matching_flows(db, conversation, inbound)
-        if matches:
-            runtime.logger.info(
-                "Telegram keyword restart matched flow_ids=%s conversation=%s previous_flow=%s waiting_for=%s",
-                [flow.id for flow in matches],
-                conversation.id,
-                session.flow_id,
-                session.waiting_for,
-            )
-            session.status = "reset"
-            session.current_node_id = None
-            session.waiting_for = None
-            session.ended_at = datetime.utcnow()
-            session.updated_at = datetime.utcnow()
-            db.flush()
+    if session and session.status == "waiting":
+        flow = db.get(runtime.Flow, session.flow_id)
+        waiting_node = None
+        if flow and session.current_node_id:
+            waiting_node = db.get(runtime.FlowNode, session.current_node_id)
+
+        valid_wait = (
+            session.waiting_for == "reply"
+            and waiting_node
+            and runtime._is(waiting_node, runtime.FlowNodeType.QUESTION)
+        ) or (
+            session.waiting_for == "button"
+            and waiting_node
+            and runtime._is(waiting_node, runtime.FlowNodeType.INTERACTIVE)
+        ) or (
+            session.waiting_for == "location"
+            and waiting_node
+            and runtime._is(waiting_node, runtime.FlowNodeType.REQUEST_LOCATION)
+        ) or session.waiting_for == "delay"
+
+        if valid_wait:
+            return await _original_run_inbound(db, conversation, inbound)
+
+        if message_type == "text":
+            matches = _matching_flows(db, conversation, inbound)
+            if matches:
+                runtime.logger.info(
+                    "Telegram keyword restart matched flow_ids=%s conversation=%s previous_flow=%s waiting_for=%s",
+                    [flow.id for flow in matches],
+                    conversation.id,
+                    session.flow_id,
+                    session.waiting_for,
+                )
+                session.status = "reset"
+                session.current_node_id = None
+                session.waiting_for = None
+                session.ended_at = datetime.utcnow()
+                session.updated_at = datetime.utcnow()
+                db.flush()
 
     return await _original_run_inbound(db, conversation, inbound)
 
