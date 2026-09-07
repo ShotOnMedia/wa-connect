@@ -14,6 +14,7 @@ _current_config: ContextVar[dict] = ContextVar("telegram_flow_config", default={
 _original_json = runtime._json
 _original_send = runtime._send
 _original_validate = runtime._validate
+_original_matching_flows = runtime._matching_flows
 _original_run_inbound = runtime.run_telegram_flows_for_inbound
 
 _MEDIA_TYPES = {"photo", "video", "voice", "audio", "document", "sticker"}
@@ -108,6 +109,55 @@ def _validate(config, inbound):
     return result
 
 
+def _matching_flows(db, conversation, inbound):
+    """Match Telegram flows even when the flow and bot use different workspaces.
+
+    Telegram flows are channel-targeted, but the current UI can create them against
+    the first active Telegram bot workspace. A conversation from another connected
+    bot therefore used to miss the flow because the core matcher also required an
+    exact workspace_id match. Until bot-specific flow targeting exists, Telegram
+    flows are shared across connected Telegram bot workspaces and the channel target
+    is the authoritative discriminator.
+    """
+    matches = _original_matching_flows(db, conversation, inbound)
+    if matches:
+        return matches
+
+    flows = db.scalars(
+        runtime.select(runtime.Flow)
+        .join(runtime.FlowChannelTarget, runtime.FlowChannelTarget.flow_id == runtime.Flow.id)
+        .where(
+            runtime.Flow.status == runtime.FlowStatus.ACTIVE,
+            runtime.FlowChannelTarget.channel == "telegram",
+        )
+        .order_by(runtime.Flow.id)
+    ).all()
+    count = db.scalar(
+        runtime.select(runtime.func.count(runtime.TelegramMessage.id)).where(
+            runtime.TelegramMessage.conversation_id == conversation.id,
+            runtime.TelegramMessage.direction == "inbound",
+        )
+    ) or 0
+    matches = [
+        flow for flow in flows
+        if (
+            runtime._enum(flow.trigger_type) == runtime.FlowTriggerType.KEYWORD.value
+            and runtime._keyword(flow.trigger_value, inbound.body)
+        ) or (
+            runtime._enum(flow.trigger_type) == runtime.FlowTriggerType.FIRST_MESSAGE.value
+            and count == 1
+        )
+    ]
+    if matches:
+        runtime.logger.info(
+            "Telegram flow workspace fallback matched flow_ids=%s conversation=%s workspace=%s",
+            [flow.id for flow in matches],
+            conversation.id,
+            conversation.workspace_id,
+        )
+    return matches
+
+
 async def run_telegram_flows_for_inbound(db, conversation, inbound):
     """Give explicit keyword triggers priority over a stale waiting session.
 
@@ -137,6 +187,7 @@ def install():
     runtime._json = _json
     runtime._send = _send
     runtime._validate = _validate
+    runtime._matching_flows = _matching_flows
     runtime._telegram_phone_flow_installed = True
 
 
