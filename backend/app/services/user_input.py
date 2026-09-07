@@ -20,9 +20,19 @@ def _answer_key(question_node,config):
         if key:return key[:120]
     return f'question_{question_node.id}'
 
+def _answer_value(config,value):
+    if value is None:return None
+    text=str(value)
+    if str(config.get('reply_type') or '').lower() in {'image','photo'}:
+        try:
+            media=json.loads(text)
+            if isinstance(media,dict) and str(media.get('id') or '').startswith(('http://','https://','/')):return str(media['id'])
+        except (TypeError,ValueError):pass
+    return text
+
 def record_answer(db,submission,question_node,config,value):
     key=_answer_key(question_node,config)
-    row=UserInputAnswer(submission_id=submission.id,question_node_id=question_node.id,answer_key=key,question_text=config.get('text'),value_text=None if value is None else str(value));db.add(row);db.flush();return row
+    row=UserInputAnswer(submission_id=submission.id,question_node_id=question_node.id,answer_key=key,question_text=config.get('text'),value_text=_answer_value(config,value));db.add(row);db.flush();return row
 
 async def complete_submission(db,submission,campaign_config=None):
     if not submission:return
