@@ -4,6 +4,7 @@ Adds Telegram contact sharing, stable media-answer capture and live-chat snapsho
 of interactive choices without duplicating the core Telegram flow runtime.
 """
 import json
+import re
 from contextvars import ContextVar
 from datetime import datetime
 
@@ -79,6 +80,69 @@ def _media_value(inbound):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _validation_error(config, fallback):
+    return str(config.get("validation_error") or "").strip() or fallback
+
+
+def _validate_text_value(config, reply_type, value):
+    """Validate typed Question answers consistently with the WhatsApp runtime."""
+    error = lambda fallback: _validation_error(config, fallback)
+    required = config.get("required", True) is not False
+
+    if not value:
+        if required:
+            return False, None, error("Please enter a reply.")
+        return True, "", None
+
+    if reply_type == "email":
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            return False, None, error("Please enter a valid email address.")
+
+    if reply_type in {"phone", "telephone"}:
+        normalised = re.sub(r"[\s().-]", "", value)
+        if not re.fullmatch(r"\+?\d{7,15}", normalised):
+            return False, None, error("Please enter a valid phone number.")
+
+    if reply_type in {"number", "integer", "decimal"}:
+        try:
+            number = float(value.replace(",", "."))
+        except ValueError:
+            return False, None, error("Please enter a valid number.")
+        if reply_type == "integer" and not number.is_integer():
+            return False, None, error("Please enter a whole number.")
+        minimum, maximum = config.get("min_value"), config.get("max_value")
+        if minimum not in (None, "") and number < float(minimum):
+            return False, None, error(f"Please enter a value of at least {minimum}.")
+        if maximum not in (None, "") and number > float(maximum):
+            return False, None, error(f"Please enter a value no greater than {maximum}.")
+        value = str(int(number)) if reply_type == "integer" else str(number)
+
+    if reply_type == "date":
+        date_format = str(config.get("date_format") or "%Y-%m-%d")
+        try:
+            datetime.strptime(value, date_format)
+        except ValueError:
+            hint = "YYYY-MM-DD" if date_format == "%Y-%m-%d" else date_format
+            return False, None, error(f"Please enter a valid date in {hint} format.")
+
+    if reply_type in {"text", "email", "phone", "telephone"}:
+        minimum, maximum = config.get("min_length"), config.get("max_length")
+        if minimum not in (None, "") and len(value) < int(minimum):
+            return False, None, error(f"Please enter at least {minimum} characters.")
+        if maximum not in (None, "") and len(value) > int(maximum):
+            return False, None, error(f"Please enter no more than {maximum} characters.")
+
+    pattern = str(config.get("pattern") or "").strip()
+    if pattern and reply_type in {"text", "email", "phone", "telephone"}:
+        try:
+            if not re.fullmatch(pattern, value):
+                return False, None, error("That reply is not in the expected format.")
+        except re.error:
+            runtime.logger.warning("Invalid validation regex on Telegram flow question: %s", pattern)
+
+    return True, value, None
+
+
 def _validate(config, inbound):
     reply_type = str(config.get("reply_type") or config.get("input_type") or "text").strip().lower()
     actual = str(inbound.message_type or "").strip().lower()
@@ -94,18 +158,32 @@ def _validate(config, inbound):
 
     if reply_type == "media":
         if actual not in _MEDIA_TYPES:
-            return False, None, error or "Please reply with a photo, video, audio, document or sticker."
+            return False, None, error or "Please send a photo, video, audio/voice note, document or sticker."
         return True, _media_value(inbound), None
 
-    result = _original_validate(config, inbound)
-    if result[0] and actual in _MEDIA_TYPES:
+    media_expected = {
+        "image": ({"photo"}, "Please send a photo or image."),
+        "photo": ({"photo"}, "Please send a photo or image."),
+        "audio": ({"audio", "voice"}, "Please send an audio file or voice note."),
+        "voice": ({"audio", "voice"}, "Please send an audio file or voice note."),
+        "video": ({"video"}, "Please send a video."),
+        "document": ({"document"}, "Please send a document or file."),
+        "file": ({"document"}, "Please send a document or file."),
+        "sticker": ({"sticker"}, "Please send a sticker."),
+    }
+    if reply_type in media_expected:
+        accepted, fallback = media_expected[reply_type]
+        if actual not in accepted:
+            return False, None, error or fallback
         captured_url = getattr(inbound, "_captured_image_url", None)
         if actual == "photo" and captured_url:
             return True, captured_url, None
         return True, _media_value(inbound), None
-    if not result[0] and reply_type in {"image", "photo"} and not error:
-        return False, None, "Please send a photo or image."
-    return result
+
+    if actual != "text":
+        return False, None, error or "Please reply with text."
+
+    return _validate_text_value(config, reply_type, str(inbound.body or "").strip())
 
 
 def _matching_flows(db, conversation, inbound):
