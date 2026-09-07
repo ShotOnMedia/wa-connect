@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_debug: bool = False
     api_prefix: str = "/api/v1"
+    public_base_url: str = ""
+    inbound_media_dir: str = "/app/storage/inbound-media"
 
     database_url: str = "mysql+pymysql://wa_connect:wa_connect@db:3306/wa_connect"
     redis_url: str = "redis://redis:6379/0"
