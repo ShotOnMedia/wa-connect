@@ -39,7 +39,7 @@ class ConversationStatusUpdate(BaseModel): status:ConversationStatus
 class ConversationAssignmentUpdate(BaseModel): user_id:int|None=None
 class MessageOut(BaseModel):
     model_config=ConfigDict(from_attributes=True)
-    id:int; meta_message_id:str|None; direction:MessageDirection; message_type:str; body:str|None; status:MessageStatus; whatsapp_timestamp:datetime|None; created_at:datetime
+    id:int; meta_message_id:str|None; direction:MessageDirection; message_type:str; body:str|None; payload_json:str|None=None; status:MessageStatus; whatsapp_timestamp:datetime|None; created_at:datetime
 class SendTextRequest(BaseModel): text:str=Field(min_length=1,max_length=4096)
 class WhatsAppConnectionCreate(BaseModel):
     workspace_name:str=Field(min_length=2,max_length=150); workspace_slug:str=Field(min_length=2,max_length=150,pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"); waba_id:str=Field(min_length=2,max_length=64); phone_number_id:str=Field(min_length=2,max_length=64); access_token:str=Field(min_length=10)
