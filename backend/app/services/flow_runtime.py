@@ -15,6 +15,7 @@ from app.services.http_api_executor import execute_http_api
 from app.services.service_window import service_window_open
 from app.services.user_input import active_submission, campaign_for_submission, complete_submission, record_answer, start_submission
 from app.services.whatsapp import WhatsAppError, request_location_message, send_list_message, send_location_message, send_media_message, send_product_message, send_reply_buttons, send_text_message
+from app.services.whatsapp_flow_actions import condition_result
 
 logger=logging.getLogger(__name__)
 def _json(value):
@@ -187,37 +188,13 @@ async def _action(db,conversation,kind,config):
     if kind=="set_status":
         if config.get("status"):conversation.status=ConversationStatus(config["status"]);db.flush()
         return
-def _compare(actual,expected,op):
-    a=str(actual or "").strip();e=str(expected or "").strip()
-    if op in {"equals","open"}:return a.casefold()==e.casefold()
-    if op in {"not_equals","closed"}:return a.casefold()!=e.casefold()
-    if op=="contains":return e.casefold() in a.casefold()
-    if op=="not_contains":return e.casefold() not in a.casefold()
-    if op=="starts_with":return a.casefold().startswith(e.casefold())
-    if op=="ends_with":return a.casefold().endswith(e.casefold())
-    if op=="empty":return not a
-    if op=="not_empty":return bool(a)
-    return False
-def _condition(db,conversation,config):
-    field=str(config.get("field") or "service_window");op=str(config.get("operator") or "open");expected=str(config.get("value") or "").strip()
-    if field=="service_window":return service_window_open(conversation) if op in {"open","equals"} else not service_window_open(conversation) if op in {"closed","not_equals"} else False
-    if field=="conversation_status":return _compare(conversation.status.value,expected,op)
-    if field=="assigned_user":return _compare("" if conversation.assigned_user_id is None else str(conversation.assigned_user_id),expected,op)
-    if field=="tag":
-        names=set(db.scalars(select(ContactTag.name).join(ContactTagLink,ContactTagLink.tag_id==ContactTag.id).where(ContactTagLink.contact_id==conversation.contact_id)).all())
-        if op=="empty":return not names
-        if op=="not_empty":return bool(names)
-        matched=any(n.casefold()==expected.casefold() for n in names);return not matched if op in {"not_equals","not_contains"} else matched
-    if field=="custom_field":
-        key=str(config.get("field_key") or config.get("key") or expected).strip();compare=str(config.get("compare_value") if "compare_value" in config else ("" if key==expected else expected)).strip();row=db.execute(select(ContactFieldValue.value_text).join(ContactFieldDefinition,ContactFieldDefinition.id==ContactFieldValue.field_id).where(ContactFieldValue.contact_id==conversation.contact_id,ContactFieldDefinition.key==key)).first();return _compare((row[0] if row else "") or "",compare,op)
-    return False
 async def _run(db,flow,conversation,session,start=None):
     nodes,by_id,out=_graph(db,flow.id);current=start or next((n for n in nodes if n.node_type==FlowNodeType.TRIGGER),None)
     if not current:return False
     visited=0
     while current and visited<100:
         visited+=1;session.current_node_id=current.id;session.status=FlowSessionStatus.ACTIVE;session.waiting_for=None;db.flush();cfg=_json(current.config_json);kind=current.node_type
-        if kind==FlowNodeType.CONDITION:current=_next(by_id,out,current.id,"yes" if _condition(db,conversation,cfg) else "no");continue
+        if kind==FlowNodeType.CONDITION:current=_next(by_id,out,current.id,"yes" if condition_result(db,conversation,cfg) else "no");continue
         if kind==FlowNodeType.HTTP_REQUEST:current=_next(by_id,out,current.id,"success" if await _http(db,conversation,cfg) else "error");continue
         if kind==FlowNodeType.INTERACTIVE:
             ecommerce=_next(by_id,out,current.id,"ecommerce")
