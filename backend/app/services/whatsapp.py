@@ -17,7 +17,11 @@ async def _send_message(phone_number_id,access_token,payload):
     url=f"https://graph.facebook.com/{settings.meta_graph_api_version}/{phone_number_id}/messages";headers={"Authorization":f"Bearer {access_token}"}
     async with httpx.AsyncClient(timeout=20) as client:r=await client.post(url,json=payload,headers=headers)
     if r.is_error:raise WhatsAppError(f"Meta API {r.status_code}: {r.text}")
-    return r.json()
+    result=r.json()
+    # Meta's send response contains the message id but not the interactive content that was sent.
+    # Preserve a snapshot locally so Live Chat can later show exactly which choices the subscriber saw.
+    if payload.get("type")=="interactive":result["wa_connect_interactive_snapshot"]=payload.get("interactive")
+    return result
 async def verify_whatsapp_connection(waba_id,phone_number_id,access_token):
     phone=await _graph_get(phone_number_id,access_token,{"fields":"id,display_phone_number,verified_name,quality_rating,platform_type,code_verification_status"});account=await _graph_get(waba_id,access_token,{"fields":"id,name"});numbers=await _graph_get(waba_id+"/phone_numbers",access_token,{"fields":"id"})
     if not any(str(i.get("id"))==str(phone_number_id) for i in numbers.get("data",[])):raise WhatsAppError("The supplied phone number does not belong to the supplied WhatsApp Business Account")
