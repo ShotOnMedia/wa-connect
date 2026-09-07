@@ -16,6 +16,11 @@ class StoredMedia:
     key:str
     provider:str
 
+@dataclass
+class StoredMediaContent:
+    content:bytes
+    content_type:str
+
 def _fernet():
     secret=str(settings.media_settings_encryption_key or "").strip()
     if not secret: raise RuntimeError("MEDIA_SETTINGS_ENCRYPTION_KEY must be configured before S3 credentials can be saved")
@@ -51,6 +56,17 @@ def store_media(db:Session,content:bytes,content_type:str|None)->StoredMedia:
         return StoredMedia(url,key,"s3")
     root=Path(row.local_path or settings.inbound_media_dir);root.mkdir(parents=True,exist_ok=True);key=f"{uuid4().hex}{extension_for(content_type)}";(root/key).write_bytes(content)
     path=f"{settings.api_prefix}/inbound-media/{key}";base=_base(row);return StoredMedia(f"{base}{path}" if base else path,key,"local")
+
+def read_stored_media(db:Session,provider:str,key:str)->StoredMediaContent:
+    row=get_storage_setting(db);provider=str(provider or "").lower();key=str(key or "").lstrip("/")
+    if not key:raise RuntimeError("Stored media key is missing")
+    if provider=="s3":
+        if not row.s3_bucket:raise RuntimeError("S3 bucket is not configured")
+        response=s3_client(row).get_object(Bucket=row.s3_bucket,Key=key);content=response["Body"].read();content_type=str(response.get("ContentType") or mimetypes.guess_type(key)[0] or "application/octet-stream")
+        return StoredMediaContent(content,content_type)
+    root=Path(row.local_path or settings.inbound_media_dir).resolve();path=(root/key).resolve()
+    if path.parent!=root or not path.is_file():raise RuntimeError("Stored local media was not found")
+    return StoredMediaContent(path.read_bytes(),str(mimetypes.guess_type(path.name)[0] or "application/octet-stream"))
 
 def test_storage(db:Session):
     row=get_storage_setting(db)
