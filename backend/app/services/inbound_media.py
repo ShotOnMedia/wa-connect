@@ -11,9 +11,12 @@ from app.services.telegram import TelegramError,download_file,get_file
 from app.telegram_models import TelegramContactFieldValue
 from app.services.media_storage import store_media
 
-def _normalise_image_type(content_type,file_path=None):
+TELEGRAM_MEDIA={"photo","video","voice","audio","document","sticker"}
+WHATSAPP_MEDIA={"image","video","audio","document","sticker"}
+
+def _normalise_type(content_type,file_path=None,fallback="application/octet-stream"):
     mime=str(content_type or "").split(";",1)[0].strip().lower()
-    if not mime or mime=="application/octet-stream":mime=str(mimetypes.guess_type(str(file_path or ""))[0] or "image/jpeg").lower()
+    if not mime or mime=="application/octet-stream":mime=str(mimetypes.guess_type(str(file_path or ""))[0] or fallback).lower()
     return mime
 
 def _store_image(db,content,content_type):
@@ -40,6 +43,52 @@ def _save_url(db,conversation,field,url,channel):
     if row:row.value_text=url;row.updated_at=datetime.utcnow()
     else:db.add(model(contact_id=conversation.contact_id,field_id=field.id,value_text=url))
     db.flush()
+
+def _telegram_item(message,message_type):
+    if message_type=="photo":
+        photos=message.get("photo") or [];return photos[-1] if photos else None
+    return message.get(message_type)
+
+async def persist_inbound_chat_media(db,conversation,inbound,channel):
+    """Download ordinary inbound chat media once and replace provider metadata with a durable WA Connect URL."""
+    channel=str(channel or "").lower();kind=str(inbound.message_type or "").lower()
+    try:payload=json.loads(inbound.payload_json or "{}")
+    except (TypeError,json.JSONDecodeError):payload={}
+    if channel=="telegram":
+        if kind not in TELEGRAM_MEDIA:return None
+        message=payload.get("message") or {};item=_telegram_item(message,kind)
+        if not isinstance(item,dict) or not item.get("file_id"):return None
+        try:
+            info=await get_file(conversation.bot.access_token,item["file_id"]);file_path=(info or {}).get("file_path")
+            if not file_path:raise TelegramError("Telegram did not return a file path")
+            content,content_type=await download_file(conversation.bot.access_token,file_path)
+        except TelegramError as exc:raise RuntimeError(f"Could not persist incoming Telegram {kind}: {exc}") from exc
+        mime=_normalise_type(item.get("mime_type") or content_type,file_path,"image/jpeg" if kind in {"photo","sticker"} else "application/octet-stream")
+        stored=store_media(db,content,mime);item["wa_connect_url"]=stored.url;item["stored_provider"]=stored.provider;item["stored_key"]=stored.key
+        if kind=="photo":
+            photos=message.get("photo") or []
+            if photos:photos[-1]=item
+        else:message[kind]=item
+        payload["message"]=message;inbound.payload_json=json.dumps(payload,ensure_ascii=False);db.flush();return stored.url
+    if channel=="whatsapp":
+        if kind not in WHATSAPP_MEDIA:return None
+        item=payload.get(kind) or {};media_id=item.get("id")
+        if not media_id:return None
+        phone=conversation.phone_number
+        if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
+        headers={"Authorization":f"Bearer {phone.access_token}"};meta_url=f"https://graph.facebook.com/{settings.meta_graph_api_version}/{media_id}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            meta=await client.get(meta_url,headers=headers)
+            if meta.is_error:raise RuntimeError(f"Could not retrieve WhatsApp {kind} metadata: HTTP {meta.status_code}")
+            meta_data=meta.json() or {};download_url=meta_data.get("url")
+            if not download_url:raise RuntimeError("Meta did not return a WhatsApp media download URL")
+            response=await client.get(download_url,headers=headers)
+            if response.is_error:raise RuntimeError(f"Could not download incoming WhatsApp {kind}: HTTP {response.status_code}")
+        mime=_normalise_type(response.headers.get("content-type") or item.get("mime_type") or meta_data.get("mime_type"),None,"image/jpeg" if kind in {"image","sticker"} else "application/octet-stream")
+        stored=store_media(db,response.content,mime);item["wa_connect_url"]=stored.url;item["stored_provider"]=stored.provider;item["stored_key"]=stored.key;payload[kind]=item
+        inbound.payload_json=json.dumps(payload,ensure_ascii=False);db.flush();return stored.url
+    return None
+
 async def capture_image_field_value(db,conversation,inbound,field_id,channel):
     field=_image_field(db,conversation.workspace_id,field_id)
     if not field:return None
@@ -48,17 +97,21 @@ async def capture_image_field_value(db,conversation,inbound,field_id,channel):
     except (TypeError,json.JSONDecodeError):payload={}
     if channel=="telegram":
         if str(inbound.message_type or "").lower()!="photo":raise RuntimeError("Image custom fields can only capture an incoming Telegram photo")
-        message=payload.get("message") or {};photos=message.get("photo") or [];item=photos[-1] if photos else None;file_id=(item or {}).get("file_id")
+        message=payload.get("message") or {};photos=message.get("photo") or [];item=photos[-1] if photos else None
+        if isinstance(item,dict) and item.get("wa_connect_url"):return item["wa_connect_url"],field.id
+        file_id=(item or {}).get("file_id")
         if not file_id:raise RuntimeError("Telegram photo does not contain a retrievable file id")
         try:
             info=await get_file(conversation.bot.access_token,file_id);file_path=(info or {}).get("file_path")
             if not file_path:raise TelegramError("Telegram did not return a file path")
             content,content_type=await download_file(conversation.bot.access_token,file_path)
         except TelegramError as exc:raise RuntimeError(f"Could not store incoming Telegram image: {exc}") from exc
-        return _store_image(db,content,_normalise_image_type(content_type,file_path)),field.id
+        return _store_image(db,content,_normalise_type(content_type,file_path,"image/jpeg")),field.id
     if channel=="whatsapp":
         if str(inbound.message_type or "").lower()!="image":raise RuntimeError("Image custom fields can only capture an incoming WhatsApp image")
-        image=payload.get("image") or {};media_id=image.get("id")
+        image=payload.get("image") or {}
+        if image.get("wa_connect_url"):return image["wa_connect_url"],field.id
+        media_id=image.get("id")
         if not media_id:raise RuntimeError("WhatsApp image does not contain a retrievable media id")
         phone=conversation.phone_number
         if not phone.access_token:raise RuntimeError("WhatsApp phone number has no access token")
@@ -83,9 +136,7 @@ async def prepare_waiting_image_capture(db,conversation,inbound,channel):
     url,target_field_id=captured;_save_url(db,conversation,_image_field(db,conversation.workspace_id,target_field_id),url,channel);capture={"url":url,"field_id":target_field_id,"body":inbound.body,"payload_json":inbound.payload_json}
     if channel=="telegram":inbound._captured_image_url=url;inbound.body=url
     else:
-        try:payload=json.loads(inbound.payload_json or "{}")
-        except (TypeError,json.JSONDecodeError):payload={}
-        image=payload.get("image") or {};image["id"]=url;payload["image"]=image;inbound.payload_json=json.dumps(payload,ensure_ascii=False)
+        image=payload_image=json.loads(inbound.payload_json or "{}").get("image") or {};image["id"]=url;payload=json.loads(inbound.payload_json or "{}");payload["image"]=image;inbound.payload_json=json.dumps(payload,ensure_ascii=False)
     return capture
 def restore_captured_image_field(db,conversation,inbound,capture,channel):
     if not capture:return
