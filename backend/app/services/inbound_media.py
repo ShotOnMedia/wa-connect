@@ -100,6 +100,12 @@ async def capture_image_field_value(db:Session,conversation,inbound,field_id,cha
 async def prepare_waiting_image_capture(db:Session,conversation,inbound,channel:str):
     _,cfg=_waiting_question(db,conversation.id,channel)
     if not cfg:return None
+    # This helper only prepares valid image media for durable storage. Wrong
+    # reply types must reach the normal flow runtime so the Question validator
+    # can send its configured/default error and keep the session waiting.
+    channel=str(channel or "").lower();actual=str(inbound.message_type or "").lower()
+    if channel=="telegram" and actual!="photo":return None
+    if channel=="whatsapp" and actual!="image":return None
     field_id=cfg.get("capture_field_id") or cfg.get("save_reply_field_id") or cfg.get("field_id");captured=await capture_image_field_value(db,conversation,inbound,field_id,channel)
     if not captured:return None
     url,target_field_id=captured;_save_url(db,conversation,_image_field(db,conversation.workspace_id,target_field_id),url,channel);capture={"url":url,"field_id":target_field_id,"body":inbound.body,"payload_json":inbound.payload_json}
