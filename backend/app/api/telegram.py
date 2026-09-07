@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
@@ -132,6 +132,23 @@ def telegram_mark_read(conversation_id:int,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id));
     if not c:raise HTTPException(status_code=404,detail="Telegram conversation not found")
     c.last_read_at=datetime.utcnow();db.commit();return {"ok":True}
+@router.post("/conversations/{conversation_id}/flow-session/reset",dependencies=[Depends(require_user)])
+def telegram_reset_flow_session(conversation_id:int,db:Session=Depends(get_db)):
+    """Return this Telegram subscriber to a neutral automation state without deleting history or fields."""
+    from app.flow_channel_models import TelegramFlowSession
+    from app.flow_delay_models import FlowDelayJob
+    from app.user_input_models import UserInputSubmission
+    c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id))
+    if not c:raise HTTPException(status_code=404,detail="Telegram conversation not found")
+    now=datetime.utcnow()
+    session=db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id==conversation_id))
+    previous=session.status if session else None
+    if session:
+        session.status="reset";session.current_node_id=None;session.waiting_for=None;session.ended_at=now;session.updated_at=now
+    delays=db.execute(update(FlowDelayJob).where(FlowDelayJob.channel=="telegram",FlowDelayJob.conversation_id==conversation_id,FlowDelayJob.status=="pending").values(status="cancelled",completed_at=now,updated_at=now))
+    inputs=db.execute(update(UserInputSubmission).where(UserInputSubmission.channel=="telegram",UserInputSubmission.conversation_id==conversation_id,UserInputSubmission.status=="active").values(status="reset"))
+    db.commit()
+    return {"ok":True,"status":"neutral","previous_status":previous,"session_reset":bool(session),"cancelled_delays":int(delays.rowcount or 0),"reset_input_submissions":int(inputs.rowcount or 0)}
 @router.post("/conversations/{conversation_id}/messages",dependencies=[Depends(require_user)])
 async def telegram_send_message(conversation_id:int,request:TelegramSendIn,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.id==conversation_id))
