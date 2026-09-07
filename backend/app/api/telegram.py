@@ -3,7 +3,6 @@ import secrets
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, joinedload
@@ -12,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_admin, require_user
 from app.models import Workspace
+from app.services.media_storage import read_stored_media
 from app.services.telegram import TelegramError, download_file, get_file, send_text, set_webhook, verify_bot, webhook_info
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
@@ -44,9 +44,11 @@ def _media_meta(m):
     else:item=msg.get(m.message_type)
     if not isinstance(item,dict):return None
     stored_url=item.get("wa_connect_url")
+    stored_key=item.get("stored_key")
+    stored_provider=item.get("stored_provider")
     file_id=item.get("file_id")
     if not stored_url and not file_id:return None
-    return {"file_id":file_id,"file_name":item.get("file_name"),"mime_type":item.get("mime_type"),"file_size":item.get("file_size"),"width":item.get("width"),"height":item.get("height"),"duration":item.get("duration"),"emoji":item.get("emoji"),"stored":bool(stored_url),"stored_url":stored_url,"url":stored_url or f"/telegram/messages/{m.id}/media"}
+    return {"file_id":file_id,"file_name":item.get("file_name"),"mime_type":item.get("mime_type"),"file_size":item.get("file_size"),"width":item.get("width"),"height":item.get("height"),"duration":item.get("duration"),"emoji":item.get("emoji"),"stored":bool(stored_key),"stored_url":stored_url,"stored_key":stored_key,"stored_provider":stored_provider,"url":f"/telegram/messages/{m.id}/media"}
 def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"media":_media_meta(m),"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
 def conversation_out(c):
     last=c.messages[-1] if c.messages else None
@@ -121,7 +123,12 @@ async def telegram_message_media(message_id:int,db:Session=Depends(get_db)):
     if not m:raise HTTPException(status_code=404,detail="Telegram message not found")
     media=_media_meta(m)
     if not media:raise HTTPException(status_code=404,detail="This message has no retrievable Telegram media")
-    if media.get("stored_url"):return RedirectResponse(media["stored_url"],status_code=307,headers={"Cache-Control":"private, max-age=300"})
+    if media.get("stored_key"):
+        try:stored=read_stored_media(db,media.get("stored_provider") or "local",media["stored_key"])
+        except Exception as exc:raise HTTPException(status_code=502,detail=f"Stored media retrieval failed: {exc}") from exc
+        headers={"Cache-Control":"private, max-age=300"}
+        if media.get("file_name"):headers["Content-Disposition"]=f'inline; filename="{str(media["file_name"]).replace(chr(34),"")}"'
+        return Response(content=stored.content,media_type=media.get("mime_type") or stored.content_type,headers=headers)
     try:
         info=await get_file(m.conversation.bot.access_token,media["file_id"]);file_path=(info or {}).get("file_path")
         if not file_path:raise TelegramError("Telegram did not return a file path")
