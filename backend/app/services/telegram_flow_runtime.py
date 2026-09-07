@@ -76,7 +76,14 @@ async def _interactive(db,c,n,by,out,cfg):
 def _validate(cfg,i):
     typ=str(cfg.get('reply_type') or 'text').lower();actual=str(i.message_type or 'text').lower();err=str(cfg.get('validation_error') or '').strip();expected={'image':'photo','photo':'photo','audio':'audio','voice':'voice','video':'video','document':'document','file':'document','sticker':'sticker'}
     if typ in expected:
-        ok=actual in ({'audio','voice'} if typ in {'audio','voice'} else {expected[typ]});return (True,i.body or actual,None) if ok else (False,None,err or f'Please reply with a {typ}.')
+        ok=actual in ({'audio','voice'} if typ in {'audio','voice'} else {expected[typ]})
+        if not ok:return False,None,err or f'Please reply with a {typ}.'
+        # Image-field ingestion attaches the durable WA Connect URL to this
+        # transient attribute. Prefer it over Telegram's media metadata JSON so
+        # custom fields, User Input answers and completion webhooks all receive
+        # the same externally usable URL.
+        captured_url=getattr(i,'_captured_image_url',None) if typ in {'image','photo'} else None
+        return True,captured_url or i.body or actual,None
     if actual!='text':return False,None,err or 'Please reply with text.'
     v=str(i.body or '').strip()
     if cfg.get('required',True) is not False and not v:return False,None,err or 'Please enter a reply.'
