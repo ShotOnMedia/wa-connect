@@ -29,9 +29,6 @@ def _public_base_url() -> str:
 
 def _normalise_image_type(content_type:str|None,file_path:str|None=None)->str:
     mime=str(content_type or "").split(";",1)[0].strip().lower()
-    # Telegram's file endpoint commonly serves photos as application/octet-stream.
-    # The webhook has already established that this is a photo, so infer the MIME
-    # type from Telegram's file path rather than rejecting the generic header.
     if not mime or mime=="application/octet-stream":
         guessed,_=mimetypes.guess_type(str(file_path or ""));mime=str(guessed or "image/jpeg").lower()
     return mime
@@ -107,7 +104,10 @@ async def prepare_waiting_image_capture(db:Session,conversation,inbound,channel:
     field_id=cfg.get("capture_field_id") or cfg.get("save_reply_field_id") or cfg.get("field_id");captured=await capture_image_field_value(db,conversation,inbound,field_id,channel)
     if not captured:return None
     url,target_field_id=captured;_save_url(db,conversation,_image_field(db,conversation.workspace_id,target_field_id),url,channel);capture={"url":url,"field_id":target_field_id,"body":inbound.body,"payload_json":inbound.payload_json}
-    if channel=="telegram":set_committed_value(inbound,"body",url)
+    if channel=="telegram":
+        # Keep the persisted Live Chat message as Telegram media metadata, but
+        # expose the durable stored URL to the flow runtime for this request.
+        setattr(inbound,"_captured_image_url",url);set_committed_value(inbound,"body",url)
     else:
         try:payload=json.loads(inbound.payload_json or "{}")
         except (TypeError,json.JSONDecodeError):payload={}
@@ -118,4 +118,5 @@ def restore_captured_image_field(db:Session,conversation,inbound,capture,channel
     if not capture:return
     field=_image_field(db,conversation.workspace_id,capture.get("field_id"))
     if field:_save_url(db,conversation,field,capture["url"],channel)
+    if hasattr(inbound,"_captured_image_url"):delattr(inbound,"_captured_image_url")
     set_committed_value(inbound,"body",capture.get("body"));set_committed_value(inbound,"payload_json",capture.get("payload_json"))
