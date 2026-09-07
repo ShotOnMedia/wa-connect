@@ -2,14 +2,14 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import CustomFieldSelector from './CustomFieldSelector.vue'
 import VariableInsert from './VariableInsert.vue'
-const props=defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]}})
+const props=defineProps({draft:{type:Object,required:true},fields:{type:Array,default:()=>[]},inputVariables:{type:Array,default:()=>[]}})
 const emit=defineEmits(['field-created'])
 const validationTextarea=ref(null)
 const textTypes=new Set(['text','email','phone','date','number','integer','decimal']),lengthTypes=new Set(['text','email','phone']),numberTypes=new Set(['number','integer','decimal'])
 const isText=computed(()=>textTypes.has(props.draft.reply_type)),hasLength=computed(()=>lengthTypes.has(props.draft.reply_type)),isNumber=computed(()=>numberTypes.has(props.draft.reply_type)),isDate=computed(()=>props.draft.reply_type==='date'),isMedia=computed(()=>['image','audio','video','document','sticker','media'].includes(props.draft.reply_type)),isTelegramPhone=computed(()=>props.draft.reply_type==='telegram_phone')
 const answerKey=computed({
-  get(){return String(props.draft.title||'').replace(/^Question$/i,'')},
-  set(value){props.draft.title=String(value||'').toLowerCase().trim().replace(/[^a-z0-9_.-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,120)}
+  get(){return String(props.draft.answer_key||'')},
+  set(value){props.draft.answer_key=String(value||'').toLowerCase().trim().replace(/[^a-z0-9_.-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,120)}
 })
 const answerVariable=computed(()=>answerKey.value?`%input.${answerKey.value}%`:'Set a key to create a reusable variable')
 watch(()=>props.draft.capture_field_id,(id)=>{
@@ -37,6 +37,6 @@ async function insertValidationVariable(token){
 <div v-if="isNumber" class="two"><label>Minimum value<input v-model="draft.min_value" type="number" placeholder="None"></label><label>Maximum value<input v-model="draft.max_value" type="number" placeholder="None"></label></div>
 <label v-if="isDate">Date format<input v-model="draft.date_format" placeholder="%Y-%m-%d"><small class="help">Default is YYYY-MM-DD.</small></label>
 <label v-if="isText">Validation pattern <span class="optional">optional</span><input v-model="draft.pattern" placeholder="Regular expression"><small class="help">Advanced: require the entire text reply to match a regular expression.</small></label>
-<label>Invalid reply message<textarea ref="validationTextarea" v-model="draft.validation_error" rows="3" placeholder="Leave blank to use the automatic message"></textarea><VariableInsert :fields="fields" @insert="insertValidationVariable"/><small class="help">Sent when the reply has the wrong type or fails validation. The flow stays on this Question block.</small></label>
+<label>Invalid reply message<textarea ref="validationTextarea" v-model="draft.validation_error" rows="3" placeholder="Leave blank to use the automatic message"></textarea><VariableInsert :fields="fields" :input-variables="inputVariables" @insert="insertValidationVariable"/><small class="help">Sent when the reply has the wrong type or fails validation. The flow stays on this Question block.</small></label>
 </section></template>
 <style scoped>.question-editor{margin-top:20px;padding-top:18px;border-top:1px solid #e5ece9}.section-title{margin-bottom:15px}.section-title b,.section-title small{display:block}.section-title small,.help{margin-top:4px;color:#7c8b85;font-weight:400;line-height:1.4}.answer-key{padding:12px;border:1px solid #cfe3d9;border-radius:9px;background:#f5fbf7}.answer-key code{color:#168653;font-weight:700}.telegram-help{padding:9px 10px;background:#eef8fd;border:1px solid #d2edf9;border-radius:7px;color:#39758e}.native-button-preview{margin:0 0 14px;padding:11px 12px;border:1px solid #d2edf9;border-radius:8px;background:#f7fcfe}.native-button-preview span,.native-button-preview b,.native-button-preview small{display:block}.native-button-preview span{font-size:11px;text-transform:uppercase;color:#6990a0;font-weight:700}.native-button-preview b{margin-top:6px;color:#229ed9}.native-button-preview small{margin-top:5px;color:#7c8b85}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.check{flex-direction:row!important;align-items:flex-start;gap:10px!important;padding:11px 12px;border:1px solid #e0e8e4;border-radius:8px}.check input{width:auto!important;margin-top:2px}.check span,.check b,.check small{display:block}.check small{margin-top:3px;color:#7c8b85;font-weight:400}.optional{font-weight:400;color:#8b9a94}.question-editor label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;margin-bottom:14px}.question-editor input,.question-editor textarea,.question-editor select{border:1px solid #d7e1dd;border-radius:8px;padding:10px;font:inherit;background:#fff}</style>
