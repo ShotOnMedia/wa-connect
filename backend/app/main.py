@@ -13,6 +13,7 @@ from app import flow_channel_models  # noqa: F401 - registers shared channel-flo
 from app import flow_graph_integrity  # noqa: F401 - registers flow graph integrity hooks
 from app import http_api_models  # noqa: F401 - registers reusable HTTP API tables
 from app import developer_api_models  # noqa: F401 - registers Developer API tables
+from app import campaign_models  # noqa: F401 - registers reusable questionnaire campaigns
 from app.flow_graph_integrity import repair_flow_start_nodes
 from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
 from app.services.whatsapp_interactive_snapshot import install as install_whatsapp_interactive_snapshot
