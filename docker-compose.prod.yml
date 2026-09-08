@@ -6,7 +6,7 @@ services:
     command: >-
       sh -c "python -c 'from app.main import Base, engine; Base.metadata.create_all(bind=engine)' &&
       alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-1}"
     env_file: .env
     volumes:
       - ${MEDIA_LOCAL_HOST_PATH:-./storage/inbound-media}:/app/storage/inbound-media
