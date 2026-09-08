@@ -11,7 +11,11 @@ from app.core.database import SessionLocal
 import app.flow_models  # noqa: F401
 import app.models  # noqa: F401
 import app.telegram_models  # noqa: F401
+import app.campaign_models  # noqa: F401
 from app.flow_delay_models import FlowDelayJob
+from app.services.telegram_phone_flow import install as install_telegram_phone_flow
+from app.services.question_choices import install as install_question_choices
+from app.services.campaign_runtime import install as install_campaign_runtime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("flow-delay-worker")
@@ -67,6 +71,9 @@ async def process_due_jobs():
 
 
 async def main():
+    install_telegram_phone_flow()
+    install_question_choices()
+    install_campaign_runtime()
     logger.info("Flow delay worker started")
     while True:
         try:
