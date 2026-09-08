@@ -1,10 +1,13 @@
 import json
+import logging
 from sqlalchemy import select
 
 from app.campaign_models import Campaign, CampaignQuestion
 from app.flow_models import FlowNodeType, FlowSessionStatus
 from app.services.user_input import active_submission, complete_submission, record_campaign_answer
 from app.user_input_models import UserInputAnswer
+
+logger = logging.getLogger(__name__)
 
 
 class _CampaignPause(Exception):
@@ -46,6 +49,40 @@ def _campaign_ok(db,submission,channel):
     if campaign.status!='active':raise RuntimeError(f'Campaign “{campaign.name}” is not active')
     if campaign.channel_scope not in {'both',channel}:raise RuntimeError(f'Campaign “{campaign.name}” is not enabled for {channel}')
     return campaign
+
+
+def _resolve_campaign(db,flow,conversation,config):
+    campaign_id=config.get('campaign_id')
+    if campaign_id:
+        campaign=db.get(Campaign,int(campaign_id))
+        if campaign:return campaign
+        raise RuntimeError(f'Selected Campaign id {campaign_id} no longer exists')
+
+    name=str(config.get('campaign_name') or '').strip()
+    if not name:return None
+
+    # Telegram flows can intentionally execute for a conversation whose workspace
+    # differs from the workspace historically stored on the Flow. Campaigns belong
+    # to the messaging workspace, so prefer the live conversation workspace first.
+    workspace_ids=[]
+    for value in (getattr(conversation,'workspace_id',None),getattr(flow,'workspace_id',None)):
+        if value is not None and value not in workspace_ids:workspace_ids.append(value)
+    for workspace_id in workspace_ids:
+        campaign=db.scalar(select(Campaign).where(Campaign.workspace_id==workspace_id,Campaign.name==name))
+        if campaign:
+            logger.info('Resolved Campaign %s id=%s via workspace=%s flow=%s conversation=%s',name,campaign.id,workspace_id,flow.id,conversation.id)
+            return campaign
+
+    # Current WA Connect installs are effectively single-tenant. If workspace
+    # history has drifted, allow a globally unique campaign name rather than
+    # silently treating the User Input Flow as a campaign-less block.
+    matches=db.scalars(select(Campaign).where(Campaign.name==name).order_by(Campaign.id)).all()
+    if len(matches)==1:
+        campaign=matches[0]
+        logger.warning('Resolved Campaign %s id=%s by unique-name fallback; flow workspace=%s conversation workspace=%s',name,campaign.id,getattr(flow,'workspace_id',None),getattr(conversation,'workspace_id',None))
+        return campaign
+    if len(matches)>1:raise RuntimeError(f'Campaign “{name}” is ambiguous across workspaces; save the flow again so it stores campaign_id')
+    raise RuntimeError(f'Selected Campaign “{name}” could not be found')
 
 
 async def _send_wa_question(wa,db,conversation,question):
@@ -99,13 +136,10 @@ def install():
     wa_start=wa.start_submission;tg_start=tg.start_submission;wa_run=wa._run;tg_run=tg._run_from;wa_resume=wa._resume;tg_resume=tg._resume
 
     def start_with_campaign(original,db,flow,conversation,node,channel,config):
+        campaign=_resolve_campaign(db,flow,conversation,config)
         submission=original(db,flow,conversation,node,channel,config)
-        campaign_id=config.get('campaign_id')
-        if not campaign_id and str(config.get('campaign_name') or '').strip():
-            campaign=db.scalar(select(Campaign).where(Campaign.workspace_id==flow.workspace_id,Campaign.name==str(config.get('campaign_name')).strip()))
-            campaign_id=campaign.id if campaign else None
-        if campaign_id:
-            submission.campaign_id=int(campaign_id);db.flush();_campaign_ok(db,submission,channel);raise _CampaignPause(submission,node,config)
+        if campaign:
+            submission.campaign_id=int(campaign.id);db.flush();_campaign_ok(db,submission,channel);raise _CampaignPause(submission,node,config)
         return submission
 
     wa.start_submission=lambda db,flow,conversation,node,channel,config:start_with_campaign(wa_start,db,flow,conversation,node,channel,config)
