@@ -34,7 +34,7 @@ async def _send(db, conversation, text):
         prompt = runtime._render(db, conversation, text).strip() or "Please share your phone number."
         button = str(config.get("telegram_phone_button_text") or "Share phone number").strip() or "Share phone number"
         result = await request_phone_number(conversation.bot.access_token, conversation.chat_id, prompt, button)
-        runtime._store_outbound(db, conversation, result, "phone_request", result.get("text") or prompt)
+        runtime._store(db, conversation, result, "phone_request", result.get("text") or prompt)
         return
     await _original_send(db, conversation, text)
 
