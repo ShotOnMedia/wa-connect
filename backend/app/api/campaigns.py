@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session,selectinload
 from app.campaign_models import Campaign,CampaignQuestion
 from app.core.database import get_db
 from app.core.security import require_manager
+from app.models import Workspace
 
 router=APIRouter(prefix="/campaigns",tags=["Campaigns"],dependencies=[Depends(require_manager)])
 
@@ -17,6 +18,11 @@ class QuestionIn(BaseModel):
 class OrderIn(BaseModel):question_ids:list[int]
 
 def _key(value):return re.sub(r"[^a-z0-9_.-]+","_",str(value or "").casefold()).strip("_")[:120]
+def _workspace_id(db:Session)->int:
+    workspace_id=db.scalar(select(Workspace.id).where(Workspace.active.is_(True)).order_by(Workspace.id.asc()))
+    if workspace_id is None:workspace_id=db.scalar(select(Workspace.id).order_by(Workspace.id.asc()))
+    if workspace_id is None:raise HTTPException(400,"No workspace is available yet")
+    return workspace_id
 def _q(row):
     try:cfg=json.loads(row.config_json or "{}")
     except Exception:cfg={}
@@ -26,17 +32,19 @@ def _c(row,detail=False):
     if detail:data["questions"]=[_q(q) for q in row.questions]
     return data
 def _campaign(db,user,cid):
-    row=db.scalar(select(Campaign).options(selectinload(Campaign.questions)).where(Campaign.id==cid,Campaign.workspace_id==user.workspace_id))
+    workspace_id=_workspace_id(db)
+    row=db.scalar(select(Campaign).options(selectinload(Campaign.questions)).where(Campaign.id==cid,Campaign.workspace_id==workspace_id))
     if not row:raise HTTPException(404,"Campaign not found")
     return row
 
 @router.get("")
 def list_campaigns(db:Session=Depends(get_db),user=Depends(require_manager)):
-    rows=db.scalars(select(Campaign).options(selectinload(Campaign.questions)).where(Campaign.workspace_id==user.workspace_id).order_by(Campaign.name)).all();return [_c(r) for r in rows]
+    workspace_id=_workspace_id(db);rows=db.scalars(select(Campaign).options(selectinload(Campaign.questions)).where(Campaign.workspace_id==workspace_id).order_by(Campaign.name)).all();return [_c(r) for r in rows]
 @router.post("")
 def create_campaign(body:CampaignIn,db:Session=Depends(get_db),user=Depends(require_manager)):
-    if db.scalar(select(Campaign.id).where(Campaign.workspace_id==user.workspace_id,func.lower(Campaign.name)==body.name.strip().lower())):raise HTTPException(409,"A campaign with this name already exists")
-    row=Campaign(workspace_id=user.workspace_id,name=body.name.strip(),description=body.description,status=body.status,channel_scope=body.channel_scope,created_by_user_id=user.id);db.add(row);db.commit();return _c(_campaign(db,user,row.id),True)
+    workspace_id=_workspace_id(db)
+    if db.scalar(select(Campaign.id).where(Campaign.workspace_id==workspace_id,func.lower(Campaign.name)==body.name.strip().lower())):raise HTTPException(409,"A campaign with this name already exists")
+    row=Campaign(workspace_id=workspace_id,name=body.name.strip(),description=body.description,status=body.status,channel_scope=body.channel_scope,created_by_user_id=user.id);db.add(row);db.commit();return _c(_campaign(db,user,row.id),True)
 @router.get("/{campaign_id}")
 def get_campaign(campaign_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):return _c(_campaign(db,user,campaign_id),True)
 @router.patch("/{campaign_id}")
