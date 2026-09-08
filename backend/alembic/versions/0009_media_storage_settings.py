@@ -8,6 +8,9 @@ import sqlalchemy as sa
 revision="0009_media_storage_settings";down_revision="0008_image_contact_field_type";branch_labels=None;depends_on=None
 
 def upgrade():
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("media_storage_settings"):
+        return
     op.create_table("media_storage_settings",
         sa.Column("id",sa.BigInteger(),primary_key=True,autoincrement=True),
         sa.Column("provider",sa.String(20),nullable=False,server_default="local"),
@@ -19,4 +22,7 @@ def upgrade():
         sa.Column("s3_use_ssl",sa.Boolean(),nullable=False,server_default=sa.true()),sa.Column("s3_path_style",sa.Boolean(),nullable=False,server_default=sa.false()),
         sa.Column("created_at",sa.DateTime(),nullable=False),sa.Column("updated_at",sa.DateTime(),nullable=False))
 
-def downgrade():op.drop_table("media_storage_settings")
+def downgrade():
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("media_storage_settings"):
+        op.drop_table("media_storage_settings")
