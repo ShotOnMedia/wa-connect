@@ -100,9 +100,12 @@ def install():
 
     def start_with_campaign(original,db,flow,conversation,node,channel,config):
         submission=original(db,flow,conversation,node,channel,config)
-        if config.get('campaign_id'):
-            _campaign_ok(db,submission,channel)
-            raise _CampaignPause(submission,node,config)
+        campaign_id=config.get('campaign_id')
+        if not campaign_id and str(config.get('campaign_name') or '').strip():
+            campaign=db.scalar(select(Campaign).where(Campaign.workspace_id==flow.workspace_id,Campaign.name==str(config.get('campaign_name')).strip()))
+            campaign_id=campaign.id if campaign else None
+        if campaign_id:
+            submission.campaign_id=int(campaign_id);db.flush();_campaign_ok(db,submission,channel);raise _CampaignPause(submission,node,config)
         return submission
 
     wa.start_submission=lambda db,flow,conversation,node,channel,config:start_with_campaign(wa_start,db,flow,conversation,node,channel,config)
@@ -128,7 +131,7 @@ def install():
         if session.waiting_for!='campaign':return await wa_resume(db,conversation,inbound,session)
         flow=db.get(wa.Flow,session.flow_id);node=db.get(wa.FlowNode,session.current_node_id)
         if not flow or not node or node.node_type!=FlowNodeType.USER_INPUT_FLOW:return await wa_resume(db,conversation,inbound,session)
-        submission=active_submission(db,flow.id,conversation.id,'whatsapp');campaign=_campaign_ok(db,submission,'whatsapp');question=_next_question(db,submission)
+        submission=active_submission(db,flow.id,conversation.id,'whatsapp');_campaign_ok(db,submission,'whatsapp');question=_next_question(db,submission)
         if not question:return await _finish_wa(wa,db,flow,conversation,session,node,submission,wa._json(node.config_json))
         cfg=_question_config(question);valid,value,error=wa._validate(cfg,inbound)
         if str(cfg.get('reply_type') or '').lower() in {'image','photo'}:value=_durable_image(inbound,'whatsapp') or value
@@ -142,7 +145,7 @@ def install():
         if session.waiting_for!='campaign':return await tg_resume(db,conversation,inbound,session)
         flow=db.get(tg.Flow,session.flow_id);node=db.get(tg.FlowNode,session.current_node_id)
         if not flow or not node or not tg._is(node,FlowNodeType.USER_INPUT_FLOW):return await tg_resume(db,conversation,inbound,session)
-        submission=active_submission(db,flow.id,conversation.id,'telegram');campaign=_campaign_ok(db,submission,'telegram');question=_next_question(db,submission)
+        submission=active_submission(db,flow.id,conversation.id,'telegram');_campaign_ok(db,submission,'telegram');question=_next_question(db,submission)
         if not question:return await _finish_tg(tg,db,flow,conversation,inbound,session,node,submission,tg._json(node.config_json))
         cfg=_question_config(question);valid,value,error=tg._validate(cfg,inbound)
         if str(cfg.get('reply_type') or '').lower() in {'image','photo'}:value=_durable_image(inbound,'telegram') or value
