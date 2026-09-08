@@ -16,6 +16,7 @@ from app import developer_api_models  # noqa: F401 - registers Developer API tab
 from app.flow_graph_integrity import repair_flow_start_nodes
 from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
 from app.services.whatsapp_interactive_snapshot import install as install_whatsapp_interactive_snapshot
+from app.services.question_choices import install as install_question_choices
 
 
 @asynccontextmanager
@@ -24,6 +25,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     install_flow_http_diagnostics()
     install_whatsapp_interactive_snapshot()
+    install_question_choices()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
         repair_flow_start_nodes(db)
