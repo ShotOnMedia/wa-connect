@@ -4,6 +4,7 @@ import './style.css'
 import './inbox-layout.css'
 import './auth.css'
 import './http-response-mapping.css'
+import './campaign-question-modal.css'
 import { installLiveChatExtras } from './live-chat-extras'
 
 createApp(Root).mount('#app')
