@@ -29,13 +29,12 @@ def upgrade():
         op.create_foreign_key("fk_user_input_answers_campaign_question_id","user_input_answers","campaign_questions",["campaign_question_id"],["id"],ondelete="SET NULL")
         op.create_index("ix_user_input_answers_campaign_question_id","user_input_answers",["campaign_question_id"])
     # Campaign answers do not correspond to a visual FlowNode.
-    with op.batch_alter_table("user_input_answers") as batch:
-        batch.alter_column("question_node_id",existing_type=sa.BigInteger(),nullable=True)
+    op.alter_column("user_input_answers","question_node_id",existing_type=sa.BigInteger(),nullable=True)
 
 
 def downgrade():
-    with op.batch_alter_table("user_input_answers") as batch:
-        batch.alter_column("question_node_id",existing_type=sa.BigInteger(),nullable=False)
+    # Downgrade is only safe if no reusable Campaign answers exist.
+    op.alter_column("user_input_answers","question_node_id",existing_type=sa.BigInteger(),nullable=False)
     ins=sa.inspect(op.get_bind());anscols=_columns(ins,"user_input_answers")
     if "campaign_question_id" in anscols:
         op.drop_index("ix_user_input_answers_campaign_question_id",table_name="user_input_answers")
