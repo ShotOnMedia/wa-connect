@@ -7,6 +7,7 @@ from app.api.developer_api import admin_router as developer_api_admin_router
 from app.api.developer_api_actions import router as developer_api_actions_router
 from app.api.developer_api_body import router as developer_api_body_router
 from app.api.developer_api_external import router as developer_api_external_router
+from app.api.developer_api_flow_trigger import router as developer_api_flow_trigger_router
 from app.api.developer_api_resolver_patch import install as install_developer_api_resolver
 from app.api.flow_duplicate import router as flow_duplicate_router
 from app.api.flows import router as flows_router
@@ -25,5 +26,5 @@ from app.core.security import require_user
 install_developer_api_resolver()
 
 api_router=APIRouter();api_router.include_router(auth_router);api_router.include_router(webhooks_router);api_router.include_router(telegram_webhooks_router);api_router.include_router(inbound_media_router)
-api_router.include_router(developer_api_actions_router);api_router.include_router(developer_api_body_router);api_router.include_router(developer_api_external_router);api_router.include_router(developer_api_admin_router)
+api_router.include_router(developer_api_actions_router);api_router.include_router(developer_api_body_router);api_router.include_router(developer_api_flow_trigger_router);api_router.include_router(developer_api_external_router);api_router.include_router(developer_api_admin_router)
 api_router.include_router(conversations_router,dependencies=[Depends(require_user)]);api_router.include_router(contacts_router,dependencies=[Depends(require_user)]);api_router.include_router(contact_fields_router,dependencies=[Depends(require_user)]);api_router.include_router(flow_duplicate_router,dependencies=[Depends(require_user)]);api_router.include_router(flows_router,dependencies=[Depends(require_user)]);api_router.include_router(user_input_submissions_router,dependencies=[Depends(require_user)]);api_router.include_router(http_apis_router);api_router.include_router(settings_router,dependencies=[Depends(require_user)]);api_router.include_router(media_storage_settings_router,dependencies=[Depends(require_user)]);api_router.include_router(telegram_router);api_router.include_router(telegram_flow_info_router);api_router.include_router(users_router,dependencies=[Depends(require_user)])
