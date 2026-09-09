@@ -21,6 +21,7 @@ from app.services.whatsapp_interactive_snapshot import install as install_whatsa
 from app.services.question_choices import install as install_question_choices
 from app.services.campaign_runtime import install as install_campaign_runtime
 from app.services.default_action_runtime import install as install_default_actions
+from app.services.multi_trigger import install as install_multi_trigger
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ async def lifespan(_: FastAPI):
     install_whatsapp_interactive_snapshot()
     install_question_choices()
     install_campaign_runtime()
+    install_multi_trigger()
     install_default_actions()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
