@@ -37,16 +37,24 @@ function locationCard(coords){
   const open=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`
   return `<div class="lc-location-card"><div class="lc-location-label">Location</div><iframe src="${esc(embed)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Shared location on OpenStreetMap"></iframe><div class="lc-location-footer"><span>${esc(`${lat}, ${lng}`)}</span><a href="${esc(open)}" target="_blank" rel="noopener noreferrer">Open map ↗</a></div><small>© OpenStreetMap contributors</small></div>`
 }
-function imageInfo(message){
-  if(String(message?.message_type||'').toLowerCase()!=='image')return null
-  const payload=payloadOf(message),image=payload.image||payload.photo||payload.media||payload
-  const url=image?.wa_connect_url||payload?.wa_connect_url||image?.stored_url||payload?.stored_url||image?.url||payload?.url||''
+function mediaInfo(message){
+  const type=String(message?.message_type||'').toLowerCase()
+  if(!['image','video','audio','voice','document','file','sticker'].includes(type))return null
+  const payload=payloadOf(message),source=payload[type]||payload[type==='voice'?'audio':type==='file'?'document':type==='sticker'?'sticker':type]||payload.media||payload
+  const url=source?.wa_connect_url||payload?.wa_connect_url||source?.stored_url||payload?.stored_url||source?.url||payload?.url||''
   if(!url)return null
-  const caption=image?.caption??payload?.caption??message?.body??''
-  return {url:String(url),caption:String(caption||'').trim()}
+  const caption=source?.caption??payload?.caption??''
+  const filename=source?.filename||source?.file_name||payload?.filename||payload?.file_name||''
+  const mime=source?.mime_type||payload?.mime_type||''
+  return {type:type==='voice'?'audio':type==='file'?'document':type,url:String(url),caption:String(caption||'').trim(),filename:String(filename||'').trim(),mime:String(mime||'').trim()}
 }
-function imageCard(info){
-  return `<div class="lc-image-card"><a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer"><img src="${esc(info.url)}" loading="lazy" alt="Received WhatsApp image"></a>${info.caption?`<div class="lc-image-caption">${esc(info.caption)}</div>`:''}</div>`
+function mediaCard(info){
+  const caption=info.caption?`<div class="lc-media-caption">${esc(info.caption)}</div>`:''
+  if(info.type==='image'||info.type==='sticker')return `<div class="lc-image-card"><a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer"><img src="${esc(info.url)}" loading="lazy" alt="Received WhatsApp image"></a>${caption}</div>`
+  if(info.type==='video')return `<div class="lc-media-card lc-video-card"><video controls preload="metadata" src="${esc(info.url)}"></video>${caption}<a class="lc-media-open" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open video ↗</a></div>`
+  if(info.type==='audio')return `<div class="lc-media-card lc-audio-card"><div class="lc-media-label">Voice / audio</div><audio controls preload="metadata" src="${esc(info.url)}"></audio>${caption}</div>`
+  const name=info.filename||'Document'
+  return `<div class="lc-media-card lc-document-card"><div class="lc-document-icon">↧</div><div class="lc-document-copy"><strong>${esc(name)}</strong>${info.mime?`<span>${esc(info.mime)}</span>`:''}<a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open document ↗</a></div>${caption}</div>`
 }
 
 async function decorateMessages(conversationId){
@@ -61,6 +69,7 @@ async function decorateMessages(conversationId){
     bubble.querySelector('.lc-interactive-snapshot')?.remove()
     bubble.querySelector('.lc-location-card')?.remove()
     bubble.querySelector('.lc-image-card')?.remove()
+    bubble.querySelector('.lc-media-card')?.remove()
     const coords=locationCoords(message)
     if(coords){
       const box=document.createElement('div');box.innerHTML=locationCard(coords);const card=box.firstElementChild
@@ -68,9 +77,9 @@ async function decorateMessages(conversationId){
       bubble.insertBefore(card,bubble.querySelector('footer'))
       return
     }
-    const image=imageInfo(message)
-    if(image){
-      const box=document.createElement('div');box.innerHTML=imageCard(image);const card=box.firstElementChild
+    const media=mediaInfo(message)
+    if(media){
+      const box=document.createElement('div');box.innerHTML=mediaCard(media);const card=box.firstElementChild
       const p=bubble.querySelector('p');if(p)p.hidden=true
       bubble.insertBefore(card,bubble.querySelector('footer'))
       return
