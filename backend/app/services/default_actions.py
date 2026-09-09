@@ -10,6 +10,7 @@ TYPE_MAP = {
     "location": "location",
     "photo": "image",
     "image": "image",
+    "sticker": "image",
     "video": "video",
     "voice": "audio",
     "audio": "audio",
@@ -18,6 +19,7 @@ TYPE_MAP = {
     "contact": "contact",
     "contacts": "contact",
 }
+MEDIA_TYPES = {"image", "video", "audio", "document"}
 
 
 def action_type_for(inbound):
@@ -36,20 +38,25 @@ def default_flow(db, workspace_id: int, channel: str, inbound):
     return flow if flow and flow.status == FlowStatus.ACTIVE else None
 
 
+def _payload(inbound):
+    raw = getattr(inbound, "payload_json", None)
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def _location_from_mapping(payload):
-    """Extract latitude/longitude from either stored Meta message or webhook JSON."""
+    """Extract latitude/longitude from stored Meta, Telegram, or complete webhook JSON."""
     if not isinstance(payload, dict):
         return None, None
-
-    # WhatsApp messages are persisted as the individual Meta message object:
-    # {"type":"location", "location":{"latitude":..., "longitude":...}}
     location = payload.get("location") or {}
     if isinstance(location, dict):
         lat, lng = location.get("latitude"), location.get("longitude")
         if lat is not None and lng is not None:
             return lat, lng
-
-    # Telegram/default-action helpers may carry a nested message object.
     message = payload.get("message") or {}
     if isinstance(message, dict):
         location = message.get("location") or {}
@@ -57,9 +64,6 @@ def _location_from_mapping(payload):
             lat, lng = location.get("latitude"), location.get("longitude")
             if lat is not None and lng is not None:
                 return lat, lng
-
-    # Also accept a complete Meta webhook payload for callers that have not yet
-    # reduced it to the stored message object.
     try:
         entry = (payload.get("entry") or [{}])[0]
         change = (entry.get("changes") or [{}])[0]
@@ -71,19 +75,98 @@ def _location_from_mapping(payload):
         return None, None
 
 
-def inbound_values(inbound, channel: str):
-    values = {"type": action_type_for(inbound) or str(getattr(inbound, "message_type", "") or "unknown"), "channel": channel}
-    if values["type"] == "location":
-        lat = lng = None
-        raw_payload = getattr(inbound, "payload_json", None)
-        try:
-            payload = json.loads(raw_payload or "{}") if isinstance(raw_payload, str) else (raw_payload or {})
-            lat, lng = _location_from_mapping(payload)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            pass
+def _telegram_media(message, kind):
+    if not isinstance(message, dict):
+        return {}
+    if kind == "photo":
+        photos = message.get("photo") or []
+        return photos[-1] if photos and isinstance(photos[-1], dict) else {}
+    item = message.get(kind) or {}
+    return item if isinstance(item, dict) else {}
 
-        # The human-readable body for WhatsApp location messages is itself the
-        # location object, so retain it as a safe fallback for older rows/tests.
+
+def _media_values(payload, channel, raw_kind):
+    """Return one channel-neutral media variable set after durable persistence."""
+    item = {}
+    caption = None
+    if channel == "telegram":
+        message = payload.get("message") or {}
+        item = _telegram_media(message, raw_kind)
+        caption = message.get("caption")
+    else:
+        item = payload.get(raw_kind) or {}
+        if not isinstance(item, dict):
+            item = {}
+        caption = item.get("caption")
+
+    url = item.get("wa_connect_url") or item.get("url")
+    mime_type = item.get("mime_type") or item.get("content_type")
+    filename = item.get("file_name") or item.get("filename")
+    file_size = item.get("file_size")
+    provider_id = item.get("file_id") if channel == "telegram" else item.get("id")
+
+    values = {}
+    if url:
+        values["url"] = str(url)
+        values["media_url"] = str(url)
+    if mime_type:
+        values["mime_type"] = str(mime_type)
+    if filename:
+        values["filename"] = str(filename)
+    if file_size is not None:
+        values["file_size"] = str(file_size)
+    if caption:
+        values["caption"] = str(caption)
+    if provider_id:
+        values["media_id"] = str(provider_id)
+    return values
+
+
+def _contact_values(payload, channel):
+    contact = {}
+    if channel == "telegram":
+        message = payload.get("message") or {}
+        contact = message.get("contact") or {}
+        if not isinstance(contact, dict):
+            contact = {}
+        first = str(contact.get("first_name") or "").strip()
+        last = str(contact.get("last_name") or "").strip()
+        name = " ".join(part for part in (first, last) if part)
+        phone = contact.get("phone_number")
+        user_id = contact.get("user_id")
+        vcard = contact.get("vcard")
+    else:
+        contacts = payload.get("contacts") or []
+        contact = contacts[0] if contacts and isinstance(contacts[0], dict) else {}
+        name_obj = contact.get("name") or {}
+        name = name_obj.get("formatted_name") if isinstance(name_obj, dict) else None
+        phones = contact.get("phones") or []
+        first_phone = phones[0] if phones and isinstance(phones[0], dict) else {}
+        phone = first_phone.get("phone") or first_phone.get("wa_id")
+        user_id = first_phone.get("wa_id")
+        vcard = None
+
+    values = {"contact_json": json.dumps(contact, ensure_ascii=False, separators=(",", ":"))}
+    if name:
+        values["contact_name"] = str(name)
+    if phone:
+        values["contact_phone"] = str(phone)
+    if user_id is not None:
+        values["contact_user_id"] = str(user_id)
+    if vcard:
+        values["contact_vcard"] = str(vcard)
+    return values
+
+
+def inbound_values(inbound, channel: str):
+    channel = str(channel or "").lower()
+    raw_kind = str(getattr(inbound, "message_type", "") or "").strip().lower()
+    action_type = action_type_for(inbound) or raw_kind or "unknown"
+    values = {"type": action_type, "channel": channel}
+    payload = _payload(inbound)
+
+    if action_type == "location":
+        lat, lng = _location_from_mapping(payload)
         if lat is None or lng is None:
             raw_body = getattr(inbound, "body", None)
             try:
@@ -91,9 +174,17 @@ def inbound_values(inbound, channel: str):
                 lat, lng = _location_from_mapping({"location": body})
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
-
         if lat is not None and lng is not None:
             values.update({"latitude": str(lat), "longitude": str(lng), "location": f"{lat},{lng}"})
+    elif action_type in MEDIA_TYPES:
+        values.update(_media_values(payload, channel, raw_kind))
+    elif action_type == "contact":
+        values.update(_contact_values(payload, channel))
+    elif action_type == "unmatched_text":
+        body = getattr(inbound, "body", None)
+        if body is not None:
+            values["text"] = str(body)
+
     return values
 
 
