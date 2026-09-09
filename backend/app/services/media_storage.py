@@ -39,6 +39,12 @@ def _base(row):return str(row.public_base_url or settings.public_base_url or "")
 def _key(row,content_type):
     prefix=str(row.s3_prefix or "").strip("/");name=f"{uuid4().hex}{extension_for(content_type)}";return f"{prefix}/{name}" if prefix else name
 
+def _proxy_url(row,key):
+    filename=Path(str(key)).name
+    path=f"{settings.api_prefix}/inbound-media/{filename}"
+    base=_base(row)
+    return f"{base}{path}" if base else path
+
 def s3_client(row):
     return boto3.client("s3",endpoint_url=(row.s3_endpoint_url or None),region_name=(row.s3_region or None),aws_access_key_id=decrypt_secret(row.s3_access_key_enc),aws_secret_access_key=decrypt_secret(row.s3_secret_key_enc),use_ssl=bool(row.s3_use_ssl),config=Config(s3={"addressing_style":"path" if row.s3_path_style else "auto"}))
 
@@ -49,11 +55,10 @@ def store_media(db:Session,content:bytes,content_type:str|None)->StoredMedia:
     if row.provider=="s3":
         if not row.s3_bucket:raise RuntimeError("S3 bucket is not configured")
         key=_key(row,content_type);s3_client(row).put_object(Bucket=row.s3_bucket,Key=key,Body=content,ContentType=content_type or "application/octet-stream")
-        base=_base(row)
-        if base:url=f"{base}/{key}"
-        elif row.s3_endpoint_url:url=f"{str(row.s3_endpoint_url).rstrip('/')}/{row.s3_bucket}/{key}"
-        else:url=f"https://{row.s3_bucket}.s3.amazonaws.com/{key}"
-        return StoredMedia(url,key,"s3")
+        # Always expose S3-backed inbound media through WA Connect. This keeps
+        # private buckets private and avoids treating the application public URL
+        # as though it were a bucket/CDN origin.
+        return StoredMedia(_proxy_url(row,key),key,"s3")
     root=Path(row.local_path or settings.inbound_media_dir);root.mkdir(parents=True,exist_ok=True);key=f"{uuid4().hex}{extension_for(content_type)}";(root/key).write_bytes(content)
     path=f"{settings.api_prefix}/inbound-media/{key}";base=_base(row);return StoredMedia(f"{base}{path}" if base else path,key,"local")
 
