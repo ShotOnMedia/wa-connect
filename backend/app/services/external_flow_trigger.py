@@ -34,6 +34,15 @@ async def trigger_telegram_flow(db: Session, flow: Flow, conversation, restart: 
     if flow.status != FlowStatus.ACTIVE:
         raise RuntimeError("Flow must be active before it can be triggered")
     existing = telegram_session(db, conversation.id)
+    # An API-triggered restart may replace a stable waiting interaction, but it
+    # must never steal the single TelegramFlowSession while another request is
+    # actively executing that graph.  In particular, an HTTP node can call an
+    # external service which immediately calls the Developer API to start the
+    # next flow.  Reusing the session at that point lets the older graph resume
+    # and mark the newer flow completed.  Return a retryable conflict instead;
+    # callers can trigger again once the current graph reaches waiting/completed.
+    if existing and existing.status == "active":
+        raise RuntimeError("Subscriber flow is currently executing; retry the trigger shortly")
     if existing and existing.status == "waiting" and not restart:
         raise RuntimeError("Subscriber already has a waiting flow session")
     synthetic = SimpleNamespace(id=None, body=None, message_type="api")
