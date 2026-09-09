@@ -6,148 +6,19 @@ let renderToken = 0
 let decoratedSignature = ''
 
 function esc(value=''){return String(value).replace(/[&<>\"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[ch]))}
-function selectedWaId(panel){
-  const candidates=[...panel.querySelectorAll('p,span')].map(el=>el.textContent.trim()).filter(Boolean)
-  return candidates.find(v=>/^\+?\d{7,}$/.test(v.replace(/[\s-]/g,'')))?.replace(/[\s+-]/g,'')||''
-}
-function fieldInput(field){
-  const id=`lc-field-${field.id}`,value=field.value??''
-  if(field.field_type==='textarea')return `<textarea id="${id}" rows="2">${esc(value)}</textarea>`
-  if(field.field_type==='select')return `<select id="${id}"><option value="">— Select —</option>${(field.options||[]).map(o=>`<option value="${esc(o)}" ${String(o)===String(value)?'selected':''}>${esc(o)}</option>`).join('')}</select>`
-  if(field.field_type==='checkbox')return `<label class="lc-check"><input id="${id}" type="checkbox" ${value===true||value==='true'?'checked':''}><span>Yes</span></label>`
-  const type=field.field_type==='number'?'number':field.field_type==='date'?'date':field.field_type==='email'?'email':'text'
-  return `<input id="${id}" type="${type}" value="${esc(value)}">`
-}
+function selectedWaId(panel){const candidates=[...panel.querySelectorAll('p,span')].map(el=>el.textContent.trim()).filter(Boolean);return candidates.find(v=>/^\+?\d{7,}$/.test(v.replace(/[\s-]/g,'')))?.replace(/[\s+-]/g,'')||''}
+function fieldInput(field){const id=`lc-field-${field.id}`,value=field.value??'';if(field.field_type==='textarea')return `<textarea id="${id}" rows="2">${esc(value)}</textarea>`;if(field.field_type==='select')return `<select id="${id}"><option value="">— Select —</option>${(field.options||[]).map(o=>`<option value="${esc(o)}" ${String(o)===String(value)?'selected':''}>${esc(o)}</option>`).join('')}</select>`;if(field.field_type==='checkbox')return `<label class="lc-check"><input id="${id}" type="checkbox" ${value===true||value==='true'?'checked':''}><span>Yes</span></label>`;const type=field.field_type==='number'?'number':field.field_type==='date'?'date':field.field_type==='email'?'email':'text';return `<input id="${id}" type="${type}" value="${esc(value)}">`}
 function readField(root,field){const el=root.querySelector(`#lc-field-${field.id}`);return field.field_type==='checkbox'?el.checked:el.value}
 function payloadOf(message){try{return JSON.parse(message?.payload_json||'{}')||{}}catch(_){return {}}}
-function locationCoords(message){
-  if(String(message?.message_type||'').toLowerCase()!=='location')return null
-  let value=null
-  try{value=payloadOf(message)?.location||JSON.parse(message.body||'{}')}catch(_){
-    const match=String(message.body||'').match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
-    if(match)value={latitude:match[1],longitude:match[2]}
-  }
-  const lat=Number(value?.latitude),lng=Number(value?.longitude)
-  if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat < -90||lat > 90||lng < -180||lng > 180)return null
-  return {lat,lng}
-}
-function locationCard(coords){
-  const {lat,lng}=coords,delta=.008,bbox=[lng-delta,lat-delta,lng+delta,lat+delta].join(',')
-  const embed=`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lng}`)}`
-  const open=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`
-  return `<div class="lc-location-card"><div class="lc-location-label">Location</div><iframe src="${esc(embed)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Shared location on OpenStreetMap"></iframe><div class="lc-location-footer"><span>${esc(`${lat}, ${lng}`)}</span><a href="${esc(open)}" target="_blank" rel="noopener noreferrer">Open map ↗</a></div><small>© OpenStreetMap contributors</small></div>`
-}
-function mediaInfo(message){
-  const type=String(message?.message_type||'').toLowerCase()
-  if(!['image','video','audio','voice','document','file','sticker'].includes(type))return null
-  const payload=payloadOf(message),source=payload[type]||payload[type==='voice'?'audio':type==='file'?'document':type==='sticker'?'sticker':type]||payload.media||payload
-  const url=source?.wa_connect_url||payload?.wa_connect_url||source?.stored_url||payload?.stored_url||source?.url||payload?.url||''
-  if(!url)return null
-  const caption=source?.caption??payload?.caption??''
-  const filename=source?.filename||source?.file_name||payload?.filename||payload?.file_name||''
-  const mime=source?.mime_type||payload?.mime_type||''
-  return {type:type==='voice'?'audio':type==='file'?'document':type,url:String(url),caption:String(caption||'').trim(),filename:String(filename||'').trim(),mime:String(mime||'').trim()}
-}
-function mediaCard(info){
-  const caption=info.caption?`<div class="lc-media-caption">${esc(info.caption)}</div>`:''
-  if(info.type==='image'||info.type==='sticker')return `<div class="lc-image-card"><a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer"><img src="${esc(info.url)}" loading="lazy" alt="Received WhatsApp image"></a>${caption}</div>`
-  if(info.type==='video')return `<div class="lc-media-card lc-video-card"><video controls preload="metadata" src="${esc(info.url)}"></video>${caption}<a class="lc-media-open" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open video ↗</a></div>`
-  if(info.type==='audio')return `<div class="lc-media-card lc-audio-card"><div class="lc-media-label">Voice / audio</div><audio controls preload="metadata" src="${esc(info.url)}"></audio>${caption}</div>`
-  const name=info.filename||'Document'
-  return `<div class="lc-media-card lc-document-card"><div class="lc-document-icon">↧</div><div class="lc-document-copy"><strong>${esc(name)}</strong>${info.mime?`<span>${esc(info.mime)}</span>`:''}<a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open document ↗</a></div>${caption}</div>`
-}
+function locationCoords(message){if(String(message?.message_type||'').toLowerCase()!=='location')return null;let value=null;try{value=payloadOf(message)?.location||JSON.parse(message.body||'{}')}catch(_){const match=String(message.body||'').match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);if(match)value={latitude:match[1],longitude:match[2]}}const lat=Number(value?.latitude),lng=Number(value?.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat < -90||lat > 90||lng < -180||lng > 180)return null;return {lat,lng}}
+function locationCard(coords){const {lat,lng}=coords,delta=.008,bbox=[lng-delta,lat-delta,lng+delta,lat+delta].join(',');const embed=`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lng}`)}`,open=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`;return `<div class="lc-location-card"><div class="lc-location-label">Location</div><iframe src="${esc(embed)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Shared location on OpenStreetMap"></iframe><div class="lc-location-footer"><span>${esc(`${lat}, ${lng}`)}</span><a href="${esc(open)}" target="_blank" rel="noopener noreferrer">Open map ↗</a></div><small>© OpenStreetMap contributors</small></div>`}
+function mediaInfo(message){const type=String(message?.message_type||'').toLowerCase();if(!['image','video','audio','voice','document','file','sticker'].includes(type))return null;const payload=payloadOf(message),source=payload[type]||payload[type==='voice'?'audio':type==='file'?'document':type]||payload.media||payload,url=source?.wa_connect_url||payload?.wa_connect_url||source?.stored_url||payload?.stored_url||source?.url||payload?.url||'';if(!url)return null;return {type:type==='voice'?'audio':type==='file'?'document':type,url:String(url),caption:String(source?.caption??payload?.caption??'').trim(),filename:String(source?.filename||source?.file_name||payload?.filename||payload?.file_name||'').trim(),mime:String(source?.mime_type||payload?.mime_type||'').trim()}}
+function mediaCard(info){const caption=info.caption?`<div class="lc-media-caption">${esc(info.caption)}</div>`:'';if(info.type==='image'||info.type==='sticker')return `<div class="lc-image-card"><a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer"><img src="${esc(info.url)}" loading="lazy" alt="Received WhatsApp image"></a>${caption}</div>`;if(info.type==='video')return `<div class="lc-media-card lc-video-card"><video controls preload="metadata" src="${esc(info.url)}"></video>${caption}<a class="lc-media-open" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open video ↗</a></div>`;if(info.type==='audio')return `<div class="lc-media-card lc-audio-card"><div class="lc-media-label">Voice / audio</div><audio controls preload="metadata" src="${esc(info.url)}"></audio>${caption}</div>`;const name=info.filename||'Document';return `<div class="lc-media-card lc-document-card"><div class="lc-document-icon">↧</div><div class="lc-document-copy"><strong>${esc(name)}</strong>${info.mime?`<span>${esc(info.mime)}</span>`:''}<a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">Open document ↗</a></div>${caption}</div>`}
+function contactInfo(message){const type=String(message?.message_type||'').toLowerCase();if(type!=='contact'&&type!=='contacts')return null;const payload=payloadOf(message),contacts=Array.isArray(payload.contacts)?payload.contacts:(payload.contact?[payload.contact]:[]);if(!contacts.length)return null;return contacts.filter(c=>c&&typeof c==='object').map(c=>{const n=c.name&&typeof c.name==='object'?c.name:{},phones=Array.isArray(c.phones)?c.phones:[],emails=Array.isArray(c.emails)?c.emails:[];return {name:n.formatted_name||[n.first_name,n.last_name].filter(Boolean).join(' ')||'Shared contact',phones:phones.map(p=>({phone:p.phone||p.wa_id||'',type:p.type||'',wa_id:p.wa_id||''})).filter(p=>p.phone),emails:emails.map(e=>e.email||'').filter(Boolean),org:c.org?.company||c.org?.department||''}})}
+function contactCard(contacts){return `<div class="lc-contact-list">${contacts.map(c=>`<div class="lc-contact-card"><div class="lc-contact-avatar">${esc((c.name||'?').slice(0,1).toUpperCase())}</div><div class="lc-contact-copy"><div class="lc-media-label">Shared contact</div><strong>${esc(c.name)}</strong>${c.phones.map(p=>`<a href="tel:${esc(p.phone)}">${esc(p.phone)}${p.type?` <span>· ${esc(p.type)}</span>`:''}</a>`).join('')}${c.emails.map(e=>`<a href="mailto:${esc(e)}">${esc(e)}</a>`).join('')}${c.org?`<small>${esc(c.org)}</small>`:''}</div></div>`).join('')}</div>`}
 
-async function decorateMessages(conversationId){
-  const bubbles=[...document.querySelectorAll('.shell:not(.wide-view) .messages .bubble')]
-  const items=await api.messages(conversationId).catch(()=>[])
-  if(items.length!==bubbles.length)return
-  const signature=`${conversationId}:${items.map(m=>`${m.id}:${m.status}:${m.message_type}:${m.payload_json||''}:${m.body||''}`).join('|')}`
-  if(signature===decoratedSignature)return
-  decoratedSignature=signature
-  items.forEach((message,index)=>{
-    const bubble=bubbles[index]
-    bubble.querySelector('.lc-interactive-snapshot')?.remove()
-    bubble.querySelector('.lc-location-card')?.remove()
-    bubble.querySelector('.lc-image-card')?.remove()
-    bubble.querySelector('.lc-media-card')?.remove()
-    const coords=locationCoords(message)
-    if(coords){
-      const box=document.createElement('div');box.innerHTML=locationCard(coords);const card=box.firstElementChild
-      const p=bubble.querySelector('p');if(p)p.hidden=true
-      bubble.insertBefore(card,bubble.querySelector('footer'))
-      return
-    }
-    const media=mediaInfo(message)
-    if(media){
-      const box=document.createElement('div');box.innerHTML=mediaCard(media);const card=box.firstElementChild
-      const p=bubble.querySelector('p');if(p)p.hidden=true
-      bubble.insertBefore(card,bubble.querySelector('footer'))
-      return
-    }
-    if(message.direction!=='outbound'||message.message_type!=='interactive'||!message.payload_json)return
-    const payload=payloadOf(message),snap=payload?._wa_connect
-    if(!snap||snap.kind!=='interactive_snapshot'||!Array.isArray(snap.options)||!snap.options.length)return
-    const box=document.createElement('div');box.className='lc-interactive-snapshot'
-    box.innerHTML=`<div class="lc-interactive-label">Interactive</div><strong>${esc(snap.title||message.body||'Choose an option')}</strong><div class="lc-interactive-options">${snap.options.map(option=>`<div class="lc-interactive-option"><b>${esc(option.label||'Option')}</b>${option.description?`<span>${esc(option.description)}</span>`:''}</div>`).join('')}</div>`
-    const p=bubble.querySelector('p');if(p)p.hidden=true
-    bubble.insertBefore(box,bubble.querySelector('footer'))
-  })
-}
+async function decorateMessages(conversationId){const bubbles=[...document.querySelectorAll('.shell:not(.wide-view) .messages .bubble')],items=await api.messages(conversationId).catch(()=>[]);if(items.length!==bubbles.length)return;const signature=`${conversationId}:${items.map(m=>`${m.id}:${m.status}:${m.message_type}:${m.payload_json||''}:${m.body||''}`).join('|')}`;if(signature===decoratedSignature)return;decoratedSignature=signature;items.forEach((message,index)=>{const bubble=bubbles[index];bubble.querySelectorAll('.lc-interactive-snapshot,.lc-location-card,.lc-image-card,.lc-media-card,.lc-contact-list').forEach(el=>el.remove());const coords=locationCoords(message);if(coords){const box=document.createElement('div');box.innerHTML=locationCard(coords);const p=bubble.querySelector('p');if(p)p.hidden=true;bubble.insertBefore(box.firstElementChild,bubble.querySelector('footer'));return}const contacts=contactInfo(message);if(contacts){const box=document.createElement('div');box.innerHTML=contactCard(contacts);const p=bubble.querySelector('p');if(p)p.hidden=true;bubble.insertBefore(box.firstElementChild,bubble.querySelector('footer'));return}const media=mediaInfo(message);if(media){const box=document.createElement('div');box.innerHTML=mediaCard(media);const p=bubble.querySelector('p');if(p)p.hidden=true;bubble.insertBefore(box.firstElementChild,bubble.querySelector('footer'));return}if(message.direction!=='outbound'||message.message_type!=='interactive'||!message.payload_json)return;const payload=payloadOf(message),snap=payload?._wa_connect;if(!snap||snap.kind!=='interactive_snapshot'||!Array.isArray(snap.options)||!snap.options.length)return;const box=document.createElement('div');box.className='lc-interactive-snapshot';box.innerHTML=`<div class="lc-interactive-label">Interactive</div><strong>${esc(snap.title||message.body||'Choose an option')}</strong><div class="lc-interactive-options">${snap.options.map(option=>`<div class="lc-interactive-option"><b>${esc(option.label||'Option')}</b>${option.description?`<span>${esc(option.description)}</span>`:''}</div>`).join('')}</div>`;const p=bubble.querySelector('p');if(p)p.hidden=true;bubble.insertBefore(box,bubble.querySelector('footer'))})}
 
-async function renderExtras(){
-  const panel=document.querySelector('.shell:not(.wide-view) .contact-panel')
-  if(!panel)return
-  const waId=selectedWaId(panel)
-  if(!waId){currentKey='';decoratedSignature='';panel.querySelector('.live-chat-extras')?.remove();return}
-  const conversations=await api.conversations('all').catch(()=>[])
-  const conversation=conversations.find(c=>String(c.contact?.wa_id||'').replace(/\D/g,'')===waId.replace(/\D/g,''))
-  if(!conversation)return
-  await decorateMessages(conversation.id)
-  const key=`${conversation.id}:${conversation.contact.id}`
-  if(currentKey===key&&panel.querySelector('.live-chat-extras'))return
-  currentKey=key;const token=++renderToken
-  const [fields,session,user]=await Promise.all([
-    api.contactCustomFields(conversation.contact.id).catch(()=>[]),
-    api.flowSession(conversation.id).catch(()=>conversation.flow_session||null),
-    api.me().catch(()=>null),
-  ])
-  if(token!==renderToken)return
-  panel.querySelector('.live-chat-extras')?.remove()
-  const root=document.createElement('section');root.className='live-chat-extras'
-  const canReset=session&&session.status!=='reset'
-  root.innerHTML=`
-    <div class="lc-section lc-flow-section">
-      <div class="lc-title"><div><small>Automation</small><strong>Flow</strong></div>${session?`<span class="lc-status ${esc(session.status)}">${esc(session.status)}</span>`:''}</div>
-      ${session?`<div class="lc-flow-card"><b>${esc(session.flow_name)}</b>${session.current_node_title?`<span>At: ${esc(session.current_node_title)}</span>`:''}${session.waiting_for?`<span>Waiting for ${esc(session.waiting_for)}</span>`:''}</div>`:'<p class="lc-empty">No flow session for this conversation.</p>'}
-      ${canReset?'<button type="button" class="lc-reset">↻ Reset flow</button>':''}
-    </div>
-    <div class="lc-section">
-      <div class="lc-title"><div><small>Profile data</small><strong>Custom fields</strong></div><span>${fields.length}</span></div>
-      ${fields.length?`<form class="lc-fields">${fields.map(f=>`<label><span>${esc(f.label)}${f.required?' *':''}</span>${fieldInput(f)}</label>`).join('')}<button class="lc-save" type="submit">Save fields</button></form>`:'<p class="lc-empty">No custom fields configured.</p>'}
-      ${user&&['admin','manager'].includes(user.role)?`<details class="lc-add-field"><summary>+ Add custom field</summary><form><input name="label" required placeholder="Field label"><input name="key" required pattern="[a-z][a-z0-9_]*" placeholder="field_key"><select name="field_type"><option value="text">Text</option><option value="textarea">Long text</option><option value="email">Email</option><option value="number">Number</option><option value="date">Date</option><option value="select">Select</option><option value="checkbox">Checkbox</option></select><button type="submit">Create field</button></form></details>`:''}
-      <p class="lc-message" hidden></p>
-    </div>`
-  panel.appendChild(root)
-  root.querySelector('.lc-reset')?.addEventListener('click',async e=>{
-    if(!window.confirm(`Reset ${session.flow_name} for this conversation?\n\nConversation history, tags and custom fields will be kept.`))return
-    const btn=e.currentTarget;btn.disabled=true;btn.textContent='Resetting…'
-    try{
-      const result=await api.resetFlowSession(conversation.id)
-      if(result&&result.status!=='reset')throw new Error('The server did not place the flow session into reset state.')
-      message(root,'Flow reset — subscriber is now in a neutral state.')
-      currentKey='';decoratedSignature='';await renderExtras()
-    }catch(err){message(root,err.message||'Could not reset flow.',true);btn.disabled=false;btn.textContent='↻ Reset flow'}
-  })
-  root.querySelector('.lc-fields')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('.lc-save');btn.disabled=true;try{for(const field of fields)await api.setContactCustomField(conversation.contact.id,field.id,readField(root,field));message(root,'Custom fields saved.')}catch(err){message(root,err.message,true)}finally{btn.disabled=false}})
-  root.querySelector('.lc-add-field form')?.addEventListener('submit',async e=>{e.preventDefault();const data=new FormData(e.currentTarget),label=String(data.get('label')||'').trim(),key=String(data.get('key')||'').trim(),field_type=String(data.get('field_type')||'text');try{await api.createContactField({label,key,field_type,options:[],required:false,active:true,sort_order:fields.length});currentKey='';await renderExtras()}catch(err){message(root,err.message,true)}})
-}
+async function renderExtras(){const panel=document.querySelector('.shell:not(.wide-view) .contact-panel');if(!panel)return;const waId=selectedWaId(panel);if(!waId){currentKey='';decoratedSignature='';panel.querySelector('.live-chat-extras')?.remove();return}const conversations=await api.conversations('all').catch(()=>[]),conversation=conversations.find(c=>String(c.contact?.wa_id||'').replace(/\D/g,'')===waId.replace(/\D/g,''));if(!conversation)return;await decorateMessages(conversation.id);const key=`${conversation.id}:${conversation.contact.id}`;if(currentKey===key&&panel.querySelector('.live-chat-extras'))return;currentKey=key;const token=++renderToken;const [fields,session,user]=await Promise.all([api.contactCustomFields(conversation.contact.id).catch(()=>[]),api.flowSession(conversation.id).catch(()=>conversation.flow_session||null),api.me().catch(()=>null)]);if(token!==renderToken)return;panel.querySelector('.live-chat-extras')?.remove();const root=document.createElement('section');root.className='live-chat-extras';const canReset=session&&session.status!=='reset';root.innerHTML=`<div class="lc-section lc-flow-section"><div class="lc-title"><div><small>Automation</small><strong>Flow</strong></div>${session?`<span class="lc-status ${esc(session.status)}">${esc(session.status)}</span>`:''}</div>${session?`<div class="lc-flow-card"><b>${esc(session.flow_name)}</b>${session.current_node_title?`<span>At: ${esc(session.current_node_title)}</span>`:''}${session.waiting_for?`<span>Waiting for ${esc(session.waiting_for)}</span>`:''}</div>`:'<p class="lc-empty">No flow session for this conversation.</p>'}${canReset?'<button type="button" class="lc-reset">↻ Reset flow</button>':''}</div><div class="lc-section"><div class="lc-title"><div><small>Profile data</small><strong>Custom fields</strong></div><span>${fields.length}</span></div>${fields.length?`<form class="lc-fields">${fields.map(f=>`<label><span>${esc(f.label)}${f.required?' *':''}</span>${fieldInput(f)}</label>`).join('')}<button class="lc-save" type="submit">Save fields</button></form>`:'<p class="lc-empty">No custom fields configured.</p>'}${user&&['admin','manager'].includes(user.role)?`<details class="lc-add-field"><summary>+ Add custom field</summary><form><input name="label" required placeholder="Field label"><input name="key" required pattern="[a-z][a-z0-9_]*" placeholder="field_key"><select name="field_type"><option value="text">Text</option><option value="textarea">Long text</option><option value="email">Email</option><option value="number">Number</option><option value="date">Date</option><option value="select">Select</option><option value="checkbox">Checkbox</option></select><button type="submit">Create field</button></form></details>`:''}<p class="lc-message" hidden></p></div>`;panel.appendChild(root);root.querySelector('.lc-reset')?.addEventListener('click',async e=>{if(!window.confirm(`Reset ${session.flow_name} for this conversation?\n\nConversation history, tags and custom fields will be kept.`))return;const btn=e.currentTarget;btn.disabled=true;btn.textContent='Resetting…';try{const result=await api.resetFlowSession(conversation.id);if(result&&result.status!=='reset')throw new Error('The server did not place the flow session into reset state.');message(root,'Flow reset — subscriber is now in a neutral state.');currentKey='';decoratedSignature='';await renderExtras()}catch(err){message(root,err.message||'Could not reset flow.',true);btn.disabled=false;btn.textContent='↻ Reset flow'}});root.querySelector('.lc-fields')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('.lc-save');btn.disabled=true;try{for(const field of fields)await api.setContactCustomField(conversation.contact.id,field.id,readField(root,field));message(root,'Custom fields saved.')}catch(err){message(root,err.message,true)}finally{btn.disabled=false}});root.querySelector('.lc-add-field form')?.addEventListener('submit',async e=>{e.preventDefault();const data=new FormData(e.currentTarget),label=String(data.get('label')||'').trim(),key=String(data.get('key')||'').trim(),field_type=String(data.get('field_type')||'text');try{await api.createContactField({label,key,field_type,options:[],required:false,active:true,sort_order:fields.length});currentKey='';await renderExtras()}catch(err){message(root,err.message,true)}})}
 function message(root,text,isError=false){const el=root.querySelector('.lc-message');if(!el)return;el.textContent=text;el.hidden=false;el.classList.toggle('error',isError);setTimeout(()=>{el.hidden=true},2500)}
-
-export function installLiveChatExtras(){
-  let timer=null
-  const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>renderExtras().catch(()=>{}),80)}
-  const observer=new MutationObserver(schedule)
-  observer.observe(document.body,{subtree:true,childList:true,characterData:true})
-  schedule()
-  window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true})
-}
+export function installLiveChatExtras(){let timer=null;const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>renderExtras().catch(()=>{}),80)};const observer=new MutationObserver(schedule);observer.observe(document.body,{subtree:true,childList:true,characterData:true});schedule();window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true})}
