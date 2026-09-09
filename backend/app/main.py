@@ -14,11 +14,13 @@ from app import flow_graph_integrity  # noqa: F401 - registers flow graph integr
 from app import http_api_models  # noqa: F401 - registers reusable HTTP API tables
 from app import developer_api_models  # noqa: F401 - registers Developer API tables
 from app import campaign_models  # noqa: F401 - registers reusable questionnaire campaigns
+from app import default_action_models  # noqa: F401 - registers channel Default Actions
 from app.flow_graph_integrity import repair_flow_start_nodes
 from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
 from app.services.whatsapp_interactive_snapshot import install as install_whatsapp_interactive_snapshot
 from app.services.question_choices import install as install_question_choices
 from app.services.campaign_runtime import install as install_campaign_runtime
+from app.services.default_action_runtime import install as install_default_actions
 
 
 @asynccontextmanager
@@ -29,6 +31,7 @@ async def lifespan(_: FastAPI):
     install_whatsapp_interactive_snapshot()
     install_question_choices()
     install_campaign_runtime()
+    install_default_actions()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
         repair_flow_start_nodes(db)
