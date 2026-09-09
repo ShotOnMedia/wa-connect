@@ -27,8 +27,6 @@ def _field(db: Session, workspace_id: int, field_id: int | str | None = None, fi
     except (TypeError,ValueError):return None
     exact=db.scalar(select(ContactFieldDefinition).where(ContactFieldDefinition.id==fid,ContactFieldDefinition.workspace_id==workspace_id,ContactFieldDefinition.active.is_(True)))
     if exact:return exact
-    # A flow may have saved the ID of the mirrored definition from another
-    # channel/workspace. Recover its key, then resolve the local definition.
     legacy=db.get(ContactFieldDefinition,fid)
     if legacy and legacy.key:
         return db.scalar(select(ContactFieldDefinition).where(ContactFieldDefinition.workspace_id==workspace_id,ContactFieldDefinition.key==legacy.key,ContactFieldDefinition.active.is_(True)))
@@ -74,6 +72,17 @@ def _format(template: str,item: Any):
     return re.sub(r'\{\{\s*item\.([^}]+?)\s*\}\}',repl,text)
 
 
+def _title(item: Any, title_spec: str, index: int):
+    spec=str(title_spec or '').strip()
+    if '{{' in spec and '}}' in spec:
+        rendered=_format(spec,item).strip()
+        if rendered:return rendered
+    value=_item_value(item,spec)
+    if value is None:value=item if not isinstance(item,(dict,list)) else f'Option {index+1}'
+    if isinstance(value,(dict,list)):return json.dumps(value,ensure_ascii=False)
+    return str(value)
+
+
 def build_dynamic_rows(db: Session,channel: str,workspace_id: int,contact_id: int,config: dict,limit: int=10):
     if str(config.get('row_generation') or 'static').lower()!='dynamic':return []
     source=_field(db,workspace_id,config.get('dynamic_source_field_id'),config.get('dynamic_source_field_key'))
@@ -85,12 +94,12 @@ def build_dynamic_rows(db: Session,channel: str,workspace_id: int,contact_id: in
     data=_path(data,config.get('dynamic_array_path') or '')
     rows=[]
     for index,item in enumerate(_items(data)[:limit]):
-        title_path=config.get('dynamic_title_path') or '';value_path=config.get('dynamic_value_path') or title_path
-        title=_item_value(item,title_path);selected=_item_value(item,value_path)
-        if title is None:title=item if not isinstance(item,(dict,list)) else f'Option {index+1}'
+        title_spec=config.get('dynamic_title_path') or '';value_path=config.get('dynamic_value_path') or title_spec
+        title=_title(item,title_spec,index)
+        selected=_item_value(item,value_path)
         if selected is None:selected=title
         description=_format(config.get('dynamic_description') or '',item)
-        rows.append({'index':index,'label':str(title)[:200],'description':description[:200],'selected':selected,'item':item})
+        rows.append({'index':index,'label':title[:200],'description':description[:200],'selected':selected,'item':item})
     return rows
 
 
