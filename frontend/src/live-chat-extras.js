@@ -19,10 +19,11 @@ function fieldInput(field){
   return `<input id="${id}" type="${type}" value="${esc(value)}">`
 }
 function readField(root,field){const el=root.querySelector(`#lc-field-${field.id}`);return field.field_type==='checkbox'?el.checked:el.value}
+function payloadOf(message){try{return JSON.parse(message?.payload_json||'{}')||{}}catch(_){return {}}}
 function locationCoords(message){
   if(String(message?.message_type||'').toLowerCase()!=='location')return null
   let value=null
-  try{value=JSON.parse(message.payload_json||'{}')?.location||JSON.parse(message.body||'{}')}catch(_){
+  try{value=payloadOf(message)?.location||JSON.parse(message.body||'{}')}catch(_){
     const match=String(message.body||'').match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
     if(match)value={latitude:match[1],longitude:match[2]}
   }
@@ -36,18 +37,30 @@ function locationCard(coords){
   const open=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`
   return `<div class="lc-location-card"><div class="lc-location-label">Location</div><iframe src="${esc(embed)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Shared location on OpenStreetMap"></iframe><div class="lc-location-footer"><span>${esc(`${lat}, ${lng}`)}</span><a href="${esc(open)}" target="_blank" rel="noopener noreferrer">Open map ↗</a></div><small>© OpenStreetMap contributors</small></div>`
 }
+function imageInfo(message){
+  if(String(message?.message_type||'').toLowerCase()!=='image')return null
+  const payload=payloadOf(message),image=payload.image||payload.photo||payload.media||payload
+  const url=image?.wa_connect_url||payload?.wa_connect_url||image?.stored_url||payload?.stored_url||image?.url||payload?.url||''
+  if(!url)return null
+  const caption=image?.caption??payload?.caption??message?.body??''
+  return {url:String(url),caption:String(caption||'').trim()}
+}
+function imageCard(info){
+  return `<div class="lc-image-card"><a href="${esc(info.url)}" target="_blank" rel="noopener noreferrer"><img src="${esc(info.url)}" loading="lazy" alt="Received WhatsApp image"></a>${info.caption?`<div class="lc-image-caption">${esc(info.caption)}</div>`:''}</div>`
+}
 
 async function decorateMessages(conversationId){
   const bubbles=[...document.querySelectorAll('.shell:not(.wide-view) .messages .bubble')]
   const items=await api.messages(conversationId).catch(()=>[])
   if(items.length!==bubbles.length)return
-  const signature=`${conversationId}:${items.map(m=>`${m.id}:${m.status}:${m.message_type}`).join('|')}`
+  const signature=`${conversationId}:${items.map(m=>`${m.id}:${m.status}:${m.message_type}:${m.payload_json||''}:${m.body||''}`).join('|')}`
   if(signature===decoratedSignature)return
   decoratedSignature=signature
   items.forEach((message,index)=>{
     const bubble=bubbles[index]
     bubble.querySelector('.lc-interactive-snapshot')?.remove()
     bubble.querySelector('.lc-location-card')?.remove()
+    bubble.querySelector('.lc-image-card')?.remove()
     const coords=locationCoords(message)
     if(coords){
       const box=document.createElement('div');box.innerHTML=locationCard(coords);const card=box.firstElementChild
@@ -55,10 +68,15 @@ async function decorateMessages(conversationId){
       bubble.insertBefore(card,bubble.querySelector('footer'))
       return
     }
+    const image=imageInfo(message)
+    if(image){
+      const box=document.createElement('div');box.innerHTML=imageCard(image);const card=box.firstElementChild
+      const p=bubble.querySelector('p');if(p)p.hidden=true
+      bubble.insertBefore(card,bubble.querySelector('footer'))
+      return
+    }
     if(message.direction!=='outbound'||message.message_type!=='interactive'||!message.payload_json)return
-    let payload={}
-    try{payload=JSON.parse(message.payload_json||'{}')}catch(_){return}
-    const snap=payload?._wa_connect
+    const payload=payloadOf(message),snap=payload?._wa_connect
     if(!snap||snap.kind!=='interactive_snapshot'||!Array.isArray(snap.options)||!snap.options.length)return
     const box=document.createElement('div');box.className='lc-interactive-snapshot'
     box.innerHTML=`<div class="lc-interactive-label">Interactive</div><strong>${esc(snap.title||message.body||'Choose an option')}</strong><div class="lc-interactive-options">${snap.options.map(option=>`<div class="lc-interactive-option"><b>${esc(option.label||'Option')}</b>${option.description?`<span>${esc(option.description)}</span>`:''}</div>`).join('')}</div>`
