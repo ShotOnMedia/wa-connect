@@ -9,9 +9,11 @@ import { installLiveChatExtras } from './live-chat-extras'
 import { installTelegramContactExtras } from './telegram-contact-extras'
 import { installLiveChatPagination } from './live-chat-pagination'
 import { installFlowTriggerExtras } from './flow-trigger-extras'
+import { installTelegramCommands } from './telegram-commands-mount'
 
 createApp(Root).mount('#app')
 installLiveChatExtras()
 installTelegramContactExtras()
 installLiveChatPagination()
 installFlowTriggerExtras()
+installTelegramCommands()
