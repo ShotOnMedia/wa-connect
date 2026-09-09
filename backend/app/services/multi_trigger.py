@@ -14,22 +14,39 @@ _installed = False
 
 
 def phrases(value: str | None) -> list[str]:
-    """Return normalized, de-duplicated trigger phrases in display order."""
+    """Return normalized, de-duplicated trigger phrases in display order.
+
+    Accept the native JSON-array representation, a JSON string containing that
+    array (seen in some older saves), newline/comma separated legacy values, and a
+    normal single keyword.
+    """
     raw_value = str(value or "").strip()
-    raw_items: list[object]
-    if raw_value.startswith("["):
+    decoded: object = raw_value
+    for _ in range(2):
+        if not isinstance(decoded, str):
+            break
+        candidate = decoded.strip()
+        if not candidate or candidate[0] not in '["':
+            break
         try:
-            decoded = json.loads(raw_value)
-            raw_items = decoded if isinstance(decoded, list) else [raw_value]
+            decoded = json.loads(candidate)
         except (TypeError, ValueError, json.JSONDecodeError):
-            raw_items = raw_value.splitlines()
+            break
+
+    if isinstance(decoded, list):
+        raw_items = decoded
     else:
-        raw_items = raw_value.splitlines()
+        text = str(decoded or "").strip()
+        # Newlines are the historical format. A comma-separated fallback also
+        # makes manually entered "hello, hi" triggers behave as expected.
+        raw_items = text.splitlines()
+        if len(raw_items) == 1 and ',' in text and not text.startswith('{'):
+            raw_items = text.split(',')
 
     seen: set[str] = set()
     result: list[str] = []
     for raw in raw_items:
-        item = str(raw).strip()
+        item = str(raw).strip().strip('"').strip("'").strip()
         key = item.casefold()
         if item and key not in seen:
             seen.add(key)
@@ -49,6 +66,8 @@ def install() -> None:
         return
     from app.services import flow_runtime, telegram_flow_runtime
 
+    # Both native matchers resolve these module globals at call time, including
+    # the native matcher retained by Default Actions.
     flow_runtime._match_keyword = matches
     telegram_flow_runtime._keyword = matches
     _installed = True
