@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.services.inbound_media import persist_inbound_chat_media, prepare_waiting_image_capture, restore_captured_image_field
 from app.services.system_fields import sync_telegram_system_fields
 from app.services.telegram import answer_callback
+from app.services.telegram_conversation_lock import TelegramConversationLockError, telegram_conversation_lock
 from app.services.telegram_phone_flow import run_telegram_flows_for_inbound
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
@@ -61,34 +62,42 @@ async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api
             except Exception:logger.exception("Could not acknowledge Telegram callback %s",callback_id)
         _,conversation=_upsert_contact_conversation(db,bot,sender,chat)
         if not conversation:return {"ok":True,"processed":0,"ignored":True}
-        synthetic_id=-abs(update_id or int(datetime.utcnow().timestamp()*1000));existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==synthetic_id))
-        if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
-        timestamp=datetime.utcnow();display_body=_callback_label(source_message,data);inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=synthetic_id,direction="inbound",message_type="button",body=display_body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
-        db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;inbound.body=data
-        try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);inbound.body=display_body;db.commit()
-        except Exception:
-            db.rollback();logger.exception("Telegram callback flow execution failed conversation=%s data=%r",conversation.id,data)
-            try:
-                saved=db.get(TelegramMessage,inbound.id)
-                if saved:saved.body=display_body;db.commit()
-            except Exception:db.rollback()
-        return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed,"callback":True}
+        try:
+            async with telegram_conversation_lock(conversation.id):
+                synthetic_id=-abs(update_id or int(datetime.utcnow().timestamp()*1000));existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==synthetic_id))
+                if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
+                timestamp=datetime.utcnow();display_body=_callback_label(source_message,data);inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=synthetic_id,direction="inbound",message_type="button",body=display_body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
+                db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;inbound.body=data
+                try:flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);inbound.body=display_body;db.commit()
+                except Exception:
+                    db.rollback();logger.exception("Telegram callback flow execution failed conversation=%s data=%r",conversation.id,data)
+                    try:
+                        saved=db.get(TelegramMessage,inbound.id)
+                        if saved:saved.body=display_body;db.commit()
+                    except Exception:db.rollback()
+                return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed,"callback":True}
+        except TelegramConversationLockError as exc:
+            db.rollback();logger.warning("Telegram callback serialization failed conversation=%s: %s",conversation.id,exc);raise HTTPException(status_code=503,detail="Telegram conversation is busy; retry this update") from exc
     message=payload.get("message")
     if not message:return {"ok":True,"processed":0,"ignored":True}
     sender=message.get("from") or {};chat=message.get("chat") or {};telegram_message_id=message.get("message_id");contact,conversation=_upsert_contact_conversation(db,bot,sender,chat)
     if not conversation or telegram_message_id is None:return {"ok":True,"processed":0,"ignored":True}
-    existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==int(telegram_message_id)))
-    if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
-    if contact:
-        phone=(message.get("contact") or {}).get("phone_number") if "contact" in message else None;location=message.get("location") if "location" in message else None;sync_telegram_system_fields(db,contact,phone_number=phone,location=location)
-    message_type,body=detect_message_type(message);timestamp=datetime.utcfromtimestamp(message["date"]) if message.get("date") else datetime.utcnow();inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(telegram_message_id),direction="inbound",message_type=message_type,body=body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
-    db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;capture=None
     try:
-        await persist_inbound_chat_media(db,conversation,inbound,"telegram")
-        capture=await prepare_waiting_image_capture(db,conversation,inbound,"telegram");flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
-    except Exception:db.rollback();logger.exception("Telegram media persistence/flow runtime failed conversation=%s inbound=%s",conversation.id,inbound.id)
-    finally:
-        if capture:
-            try:restore_captured_image_field(db,conversation,inbound,capture,"telegram");db.commit()
-            except Exception:db.rollback();logger.exception("Could not finalize captured Telegram image field")
-    return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed}
+        async with telegram_conversation_lock(conversation.id):
+            existing=db.scalar(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation.id,TelegramMessage.telegram_message_id==int(telegram_message_id)))
+            if existing:db.commit();return {"ok":True,"processed":0,"duplicate":True}
+            if contact:
+                phone=(message.get("contact") or {}).get("phone_number") if "contact" in message else None;location=message.get("location") if "location" in message else None;sync_telegram_system_fields(db,contact,phone_number=phone,location=location)
+            message_type,body=detect_message_type(message);timestamp=datetime.utcfromtimestamp(message["date"]) if message.get("date") else datetime.utcnow();inbound=TelegramMessage(conversation_id=conversation.id,telegram_message_id=int(telegram_message_id),direction="inbound",message_type=message_type,body=body,payload_json=json.dumps(payload,ensure_ascii=False),status="received",telegram_timestamp=timestamp)
+            db.add(inbound);conversation.last_message_at=timestamp;db.commit();db.refresh(inbound);flows_executed=0;capture=None
+            try:
+                await persist_inbound_chat_media(db,conversation,inbound,"telegram")
+                capture=await prepare_waiting_image_capture(db,conversation,inbound,"telegram");flows_executed=await run_telegram_flows_for_inbound(db,conversation,inbound);db.commit()
+            except Exception:db.rollback();logger.exception("Telegram media persistence/flow runtime failed conversation=%s inbound=%s",conversation.id,inbound.id)
+            finally:
+                if capture:
+                    try:restore_captured_image_field(db,conversation,inbound,capture,"telegram");db.commit()
+                    except Exception:db.rollback();logger.exception("Could not finalize captured Telegram image field")
+            return {"ok":True,"processed":1,"conversation_id":conversation.id,"message_id":inbound.id,"flows_executed":flows_executed}
+    except TelegramConversationLockError as exc:
+        db.rollback();logger.warning("Telegram update serialization failed conversation=%s: %s",conversation.id,exc);raise HTTPException(status_code=503,detail="Telegram conversation is busy; retry this update") from exc
