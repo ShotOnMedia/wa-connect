@@ -17,6 +17,7 @@ from app import campaign_models  # noqa: F401 - registers reusable questionnaire
 from app import default_action_models  # noqa: F401 - registers channel Default Actions
 from app.flow_graph_integrity import repair_flow_start_nodes
 from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
+from app.services.http_api_tracking_checkpoint import install as install_http_api_tracking_checkpoint
 from app.services.whatsapp_interactive_snapshot import install as install_whatsapp_interactive_snapshot
 from app.services.question_choices import install as install_question_choices
 from app.services.campaign_runtime import install as install_campaign_runtime
@@ -30,6 +31,10 @@ async def lifespan(_: FastAPI):
     # v0.2.0 bootstrap. Alembic owns schema changes; create_all remains temporarily for legacy bootstrap compatibility.
     Base.metadata.create_all(bind=engine)
     install_flow_http_diagnostics()
+    # HttpApiCall references FlowRun. Commit completed call diagnostics before
+    # the independent flow-tracking session updates the parent run row, avoiding
+    # InnoDB FK lock contention.
+    install_http_api_tracking_checkpoint()
     install_whatsapp_interactive_snapshot()
     install_question_choices()
     install_campaign_runtime()
