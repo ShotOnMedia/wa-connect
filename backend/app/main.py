@@ -22,6 +22,7 @@ from app.services.question_choices import install as install_question_choices
 from app.services.campaign_runtime import install as install_campaign_runtime
 from app.services.default_action_runtime import install as install_default_actions
 from app.services.multi_trigger import install as install_multi_trigger
+from app.services.telegram_dynamic_checkpoint import install as install_telegram_dynamic_checkpoint
 
 
 @asynccontextmanager
@@ -32,6 +33,10 @@ async def lifespan(_: FastAPI):
     install_whatsapp_interactive_snapshot()
     install_question_choices()
     install_campaign_runtime()
+    # A dynamic-list button choice is durable user input. Checkpoint it before
+    # continuing to downstream nodes, and close a stale waiting session if a
+    # later node fails.
+    install_telegram_dynamic_checkpoint()
     # Default Actions wraps the channel matchers. Install it first, then let
     # multi-trigger replace the native keyword predicate used by that wrapper.
     install_default_actions()
