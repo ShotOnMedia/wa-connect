@@ -32,8 +32,10 @@ async def lifespan(_: FastAPI):
     install_whatsapp_interactive_snapshot()
     install_question_choices()
     install_campaign_runtime()
-    install_multi_trigger()
+    # Default Actions wraps the channel matchers. Install it first, then let
+    # multi-trigger replace the native keyword predicate used by that wrapper.
     install_default_actions()
+    install_multi_trigger()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
         repair_flow_start_nodes(db)
