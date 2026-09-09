@@ -19,17 +19,42 @@ function fieldInput(field){
   return `<input id="${id}" type="${type}" value="${esc(value)}">`
 }
 function readField(root,field){const el=root.querySelector(`#lc-field-${field.id}`);return field.field_type==='checkbox'?el.checked:el.value}
+function locationCoords(message){
+  if(String(message?.message_type||'').toLowerCase()!=='location')return null
+  let value=null
+  try{value=JSON.parse(message.payload_json||'{}')?.location||JSON.parse(message.body||'{}')}catch(_){
+    const match=String(message.body||'').match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
+    if(match)value={latitude:match[1],longitude:match[2]}
+  }
+  const lat=Number(value?.latitude),lng=Number(value?.longitude)
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat < -90||lat > 90||lng < -180||lng > 180)return null
+  return {lat,lng}
+}
+function locationCard(coords){
+  const {lat,lng}=coords,delta=.008,bbox=[lng-delta,lat-delta,lng+delta,lat+delta].join(',')
+  const embed=`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lng}`)}`
+  const open=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`
+  return `<div class="lc-location-card"><div class="lc-location-label">Location</div><iframe src="${esc(embed)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Shared location on OpenStreetMap"></iframe><div class="lc-location-footer"><span>${esc(`${lat}, ${lng}`)}</span><a href="${esc(open)}" target="_blank" rel="noopener noreferrer">Open map ↗</a></div><small>© OpenStreetMap contributors</small></div>`
+}
 
-async function decorateInteractiveMessages(conversationId){
+async function decorateMessages(conversationId){
   const bubbles=[...document.querySelectorAll('.shell:not(.wide-view) .messages .bubble')]
-  const signature=`${conversationId}:${bubbles.length}`
-  if(signature===decoratedSignature)return
   const items=await api.messages(conversationId).catch(()=>[])
   if(items.length!==bubbles.length)return
+  const signature=`${conversationId}:${items.map(m=>`${m.id}:${m.status}:${m.message_type}`).join('|')}`
+  if(signature===decoratedSignature)return
   decoratedSignature=signature
   items.forEach((message,index)=>{
     const bubble=bubbles[index]
     bubble.querySelector('.lc-interactive-snapshot')?.remove()
+    bubble.querySelector('.lc-location-card')?.remove()
+    const coords=locationCoords(message)
+    if(coords){
+      const box=document.createElement('div');box.innerHTML=locationCard(coords);const card=box.firstElementChild
+      const p=bubble.querySelector('p');if(p)p.hidden=true
+      bubble.insertBefore(card,bubble.querySelector('footer'))
+      return
+    }
     if(message.direction!=='outbound'||message.message_type!=='interactive'||!message.payload_json)return
     let payload={}
     try{payload=JSON.parse(message.payload_json||'{}')}catch(_){return}
@@ -50,7 +75,7 @@ async function renderExtras(){
   const conversations=await api.conversations('all').catch(()=>[])
   const conversation=conversations.find(c=>String(c.contact?.wa_id||'').replace(/\D/g,'')===waId.replace(/\D/g,''))
   if(!conversation)return
-  await decorateInteractiveMessages(conversation.id)
+  await decorateMessages(conversation.id)
   const key=`${conversation.id}:${conversation.contact.id}`
   if(currentKey===key&&panel.querySelector('.live-chat-extras'))return
   currentKey=key;const token=++renderToken
@@ -62,12 +87,12 @@ async function renderExtras(){
   if(token!==renderToken)return
   panel.querySelector('.live-chat-extras')?.remove()
   const root=document.createElement('section');root.className='live-chat-extras'
-  const activeFlow=session&&['active','waiting'].includes(session.status)
+  const canReset=session&&session.status!=='reset'
   root.innerHTML=`
     <div class="lc-section lc-flow-section">
       <div class="lc-title"><div><small>Automation</small><strong>Flow</strong></div>${session?`<span class="lc-status ${esc(session.status)}">${esc(session.status)}</span>`:''}</div>
       ${session?`<div class="lc-flow-card"><b>${esc(session.flow_name)}</b>${session.current_node_title?`<span>At: ${esc(session.current_node_title)}</span>`:''}${session.waiting_for?`<span>Waiting for ${esc(session.waiting_for)}</span>`:''}</div>`:'<p class="lc-empty">No flow session for this conversation.</p>'}
-      ${activeFlow?'<button class="lc-reset">Reset flow</button>':''}
+      ${canReset?'<button type="button" class="lc-reset">↻ Reset flow</button>':''}
     </div>
     <div class="lc-section">
       <div class="lc-title"><div><small>Profile data</small><strong>Custom fields</strong></div><span>${fields.length}</span></div>
@@ -76,7 +101,16 @@ async function renderExtras(){
       <p class="lc-message" hidden></p>
     </div>`
   panel.appendChild(root)
-  root.querySelector('.lc-reset')?.addEventListener('click',async e=>{if(!confirm(`Reset ${session.flow_name} for this conversation?`))return;e.currentTarget.disabled=true;try{await api.resetFlowSession(conversation.id);currentKey='';await renderExtras()}catch(err){message(root,err.message,true)}finally{e.currentTarget.disabled=false}})
+  root.querySelector('.lc-reset')?.addEventListener('click',async e=>{
+    if(!window.confirm(`Reset ${session.flow_name} for this conversation?\n\nConversation history, tags and custom fields will be kept.`))return
+    const btn=e.currentTarget;btn.disabled=true;btn.textContent='Resetting…'
+    try{
+      const result=await api.resetFlowSession(conversation.id)
+      if(result&&result.status!=='reset')throw new Error('The server did not place the flow session into reset state.')
+      message(root,'Flow reset — subscriber is now in a neutral state.')
+      currentKey='';decoratedSignature='';await renderExtras()
+    }catch(err){message(root,err.message||'Could not reset flow.',true);btn.disabled=false;btn.textContent='↻ Reset flow'}
+  })
   root.querySelector('.lc-fields')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('.lc-save');btn.disabled=true;try{for(const field of fields)await api.setContactCustomField(conversation.contact.id,field.id,readField(root,field));message(root,'Custom fields saved.')}catch(err){message(root,err.message,true)}finally{btn.disabled=false}})
   root.querySelector('.lc-add-field form')?.addEventListener('submit',async e=>{e.preventDefault();const data=new FormData(e.currentTarget),label=String(data.get('label')||'').trim(),key=String(data.get('key')||'').trim(),field_type=String(data.get('field_type')||'text');try{await api.createContactField({label,key,field_type,options:[],required:false,active:true,sort_order:fields.length});currentKey='';await renderExtras()}catch(err){message(root,err.message,true)}})
 }
