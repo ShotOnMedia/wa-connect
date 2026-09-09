@@ -29,6 +29,14 @@ def _failure_message(api: HttpApi | None, result: dict | None, fallback: str) ->
     return f"{name} failed: {suffix}"
 
 
+def _missing_api_message(aid, api: HttpApi | None) -> str:
+    if aid in (None, ""):
+        return "HTTP Request failed: no saved API is selected on this flow block"
+    if api is None:
+        return f"HTTP Request failed: saved API id {aid} no longer exists"
+    return f"{api.name} failed: saved API id {aid} is inactive"
+
+
 async def _telegram_http(db, conversation, config):
     from app.services import telegram_flow_runtime as runtime
     session = runtime._session(db, conversation.id)
@@ -38,7 +46,7 @@ async def _telegram_http(db, conversation, config):
     aid = config.get("http_api_id")
     api = db.get(HttpApi, int(aid)) if aid else None
     if not api or not api.active:
-        message = _failure_message(api, None, "saved API is missing or inactive")
+        message = _missing_api_message(aid, api)
         track_event(run_id, "error", node_id=node_id, node_type="http_request", message=message, run_status="running")
         if not flow_id or not _has_error_path(db, flow_id, node_id): raise RuntimeError(f"{message}; no Error path is connected")
         return False
@@ -62,7 +70,7 @@ async def _whatsapp_http(db, conversation, config):
     aid = config.get("http_api_id")
     api = db.get(HttpApi, int(aid)) if aid else None
     if not api or not api.active:
-        message = _failure_message(api, None, "saved API is missing or inactive")
+        message = _missing_api_message(aid, api)
         track_event(run_id, "error", node_id=node_id, node_type="http_request", message=message, run_status="running")
         if not flow_id or not _has_error_path(db, flow_id, node_id): raise RuntimeError(f"{message}; no Error path is connected")
         return False
