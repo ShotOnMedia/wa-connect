@@ -49,9 +49,16 @@ def _whatsapp_matching(db, conversation, inbound):
     return []
 
 
-async def _whatsapp_run(db, flow, conversation, session, node):
+async def _whatsapp_run(db, flow, conversation, session, start=None):
+    """Preserve the native WhatsApp _run(..., start=None) call signature.
+
+    The runtime calls _run with four arguments for a newly matched flow and with a
+    fifth start-node argument when resuming inside the graph.  The Default Action
+    wrapper must support both forms; otherwise a newly matched Default Action raises
+    TypeError before its first node can execute.
+    """
     try:
-        return await _original_whatsapp_run(db, flow, conversation, session, node)
+        return await _original_whatsapp_run(db, flow, conversation, session, start)
     finally:
         if getattr(conversation, "_default_action_flow_id", None) == flow.id:
             try:
