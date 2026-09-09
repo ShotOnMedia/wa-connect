@@ -8,14 +8,21 @@ from app.services.default_actions import attach_inbound_values, default_flow
 from app.services import flow_runtime as whatsapp_runtime
 from app.services import telegram_flow_runtime as telegram_runtime
 
-_original_telegram_matching = telegram_runtime._matching_flows
 _original_telegram_run_flow = telegram_runtime._run_flow
-_original_whatsapp_matching = whatsapp_runtime._matching_flows
 _original_whatsapp_run = whatsapp_runtime._run
 
 
 def _telegram_matching(db, conversation, inbound):
-    matches = _original_telegram_matching(db, conversation, inbound)
+    """Resolve normal Telegram triggers first, then fall back to Default Actions.
+
+    Look up the matcher at call time rather than capturing it at import time.  This
+    keeps later-installed trigger extensions (for example multi-trigger matching)
+    active even though Default Actions itself wraps _matching_flows.
+    """
+    native = getattr(telegram_runtime, "_default_actions_native_matching", None)
+    if native is None:
+        native = telegram_runtime._matching_flows
+    matches = native(db, conversation, inbound)
     if matches:
         return matches
     flow = default_flow(db, conversation.workspace_id, "telegram", inbound)
@@ -35,7 +42,11 @@ async def _telegram_run_flow(db, flow, conversation, inbound):
 
 
 def _whatsapp_matching(db, conversation, inbound):
-    matches = _original_whatsapp_matching(db, conversation, inbound)
+    """Resolve normal WhatsApp triggers first, then fall back to Default Actions."""
+    native = getattr(whatsapp_runtime, "_default_actions_native_matching", None)
+    if native is None:
+        native = whatsapp_runtime._matching_flows
+    matches = native(db, conversation, inbound)
     if matches:
         return matches
     flow = default_flow(db, conversation.workspace_id, "whatsapp", inbound)
@@ -50,13 +61,7 @@ def _whatsapp_matching(db, conversation, inbound):
 
 
 async def _whatsapp_run(db, flow, conversation, session, start=None):
-    """Preserve the native WhatsApp _run(..., start=None) call signature.
-
-    The runtime calls _run with four arguments for a newly matched flow and with a
-    fifth start-node argument when resuming inside the graph.  The Default Action
-    wrapper must support both forms; otherwise a newly matched Default Action raises
-    TypeError before its first node can execute.
-    """
+    """Preserve the native WhatsApp _run(..., start=None) call signature."""
     try:
         return await _original_whatsapp_run(db, flow, conversation, session, start)
     finally:
@@ -73,10 +78,12 @@ async def _whatsapp_run(db, flow, conversation, session, start=None):
 
 def install():
     if not getattr(telegram_runtime, "_default_actions_installed", False):
+        telegram_runtime._default_actions_native_matching = telegram_runtime._matching_flows
         telegram_runtime._matching_flows = _telegram_matching
         telegram_runtime._run_flow = _telegram_run_flow
         telegram_runtime._default_actions_installed = True
     if not getattr(whatsapp_runtime, "_default_actions_installed", False):
+        whatsapp_runtime._default_actions_native_matching = whatsapp_runtime._matching_flows
         whatsapp_runtime._matching_flows = _whatsapp_matching
         whatsapp_runtime._run = _whatsapp_run
         whatsapp_runtime._default_actions_installed = True
