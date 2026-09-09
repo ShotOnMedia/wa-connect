@@ -12,6 +12,8 @@ from app.models import Contact, Conversation, WhatsAppPhoneNumber
 from app.services.developer_api import DeveloperApiContext, require_scope
 from app.services.external_flow_trigger import trigger_telegram_flow, trigger_whatsapp_flow
 from app.services.subscriber_resolver import resolve_subscriber
+from app.services.telegram_flow_queue import enqueue_telegram_flow
+from app.services.telegram_flow_runtime import _session as telegram_session
 from app.telegram_models import TelegramConversation
 
 router = APIRouter(tags=["Developer API v1"])
@@ -55,6 +57,27 @@ async def trigger_with_universal_subscriber(
         ).order_by(TelegramConversation.last_message_at.desc(), TelegramConversation.id.desc()).limit(1))
         if not conv:
             raise HTTPException(409, "Telegram subscriber has no bot conversation to send through")
+
+        # An external service can call this endpoint from inside the current
+        # flow's HTTP Request. Waiting for that flow here would deadlock the
+        # request chain, while restarting it would corrupt the single Telegram
+        # session. Queue the requested hand-off and return immediately instead.
+        existing = telegram_session(db, conv.id)
+        if existing and existing.status == "active":
+            try:
+                position = await enqueue_telegram_flow(conv.id, flow.id, payload.restart)
+            except RuntimeError as exc:
+                db.rollback()
+                raise HTTPException(503, str(exc)) from exc
+            db.commit()
+            state = "queued"
+            waiting = None
+            out = {"ok": True, "flow_id": flow.id, "flow": flow.name, "channel": channel,
+                   "subscriber": f"{channel}:{sub.id}", "status": state, "waiting_for": waiting,
+                   "queue_position": position}
+            _log(db, ctx, request, started, channel=channel)
+            return out
+
         try:
             _, session = await trigger_telegram_flow(db, flow, conv, payload.restart)
         except RuntimeError as exc:
