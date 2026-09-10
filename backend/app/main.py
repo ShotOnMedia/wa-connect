@@ -24,6 +24,7 @@ from app.services.campaign_runtime import install as install_campaign_runtime
 from app.services.default_action_runtime import install as install_default_actions
 from app.services.multi_trigger import install as install_multi_trigger
 from app.services.telegram_dynamic_checkpoint import install as install_telegram_dynamic_checkpoint
+from app.services.flow_interrupts import install as install_flow_interrupts
 
 
 @asynccontextmanager
@@ -46,6 +47,10 @@ async def lifespan(_: FastAPI):
     # multi-trigger replace the native keyword predicate used by that wrapper.
     install_default_actions()
     install_multi_trigger()
+    # Recovery/menu/cancel flows may explicitly opt in to interrupting a valid
+    # waiting interaction. Install last so Campaign and checkpoint resume hooks
+    # remain inside the interrupt boundary.
+    install_flow_interrupts()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db)
         repair_flow_start_nodes(db)
