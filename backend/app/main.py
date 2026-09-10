@@ -25,6 +25,7 @@ from app.services.default_action_runtime import install as install_default_actio
 from app.services.multi_trigger import install as install_multi_trigger
 from app.services.telegram_dynamic_checkpoint import install as install_telegram_dynamic_checkpoint
 from app.services.flow_interrupts import install as install_flow_interrupts
+from app.services.button_start_flow import install as install_button_start_flow
 
 
 @asynccontextmanager
@@ -43,6 +44,9 @@ async def lifespan(_: FastAPI):
     # continuing to downstream nodes, and close a stale waiting session if a
     # later node fails.
     install_telegram_dynamic_checkpoint()
+    # Button Start flow actions wrap the final Telegram resume chain, including
+    # campaign/dynamic-selection resume behavior installed above.
+    install_button_start_flow()
     # Default Actions wraps the channel matchers. Install it first, then let
     # multi-trigger replace the native keyword predicate used by that wrapper.
     install_default_actions()
