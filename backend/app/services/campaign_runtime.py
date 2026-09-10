@@ -150,7 +150,11 @@ def install():
         except _CampaignPause as pause:
             question=_next_question(db,pause.submission)
             if not question:return await _finish_tg(tg,db,flow,conversation,inbound,session,pause.node,pause.submission,pause.config)
-            session.current_node_id=pause.node.id;session.status='waiting';session.waiting_for='campaign';await _send_tg_question(tg,db,conversation,question);db.flush();return True
+            # Do not mark the session as waiting until Telegram has accepted the question.
+            # A transient send failure must not leave the subscriber waiting for a message
+            # that was never delivered.
+            await _send_tg_question(tg,db,conversation,question)
+            session.current_node_id=pause.node.id;session.status='waiting';session.waiting_for='campaign';db.flush();return True
     wa._run=wa_run_campaign;tg._run_from=tg_run_campaign
     async def wa_resume_campaign(db,conversation,inbound,session):
         if session.waiting_for!='campaign':return await wa_resume(db,conversation,inbound,session)
@@ -176,6 +180,10 @@ def install():
         if not valid:await tg._send(db,conversation,error or 'Please try again.');session.status='waiting';session.waiting_for='campaign';db.flush();return True
         if cfg.get('capture_field_id'):tg.set_field(db,conversation,int(cfg['capture_field_id']),value)
         record_campaign_answer(db,submission,question,cfg,value);next_question=_next_question(db,submission)
-        if next_question:session.status='waiting';session.waiting_for='campaign';await _send_tg_question(tg,db,conversation,next_question);db.flush();return True
+        if next_question:
+            # The accepted answer is already part of this transaction. Send the next
+            # question before moving the session checkpoint to its waiting state.
+            await _send_tg_question(tg,db,conversation,next_question)
+            session.status='waiting';session.waiting_for='campaign';db.flush();return True
         return await _finish_tg(tg,db,flow,conversation,inbound,session,node,submission,tg._json(node.config_json))
     wa._resume=wa_resume_campaign;tg._resume=tg_resume_campaign;wa._campaign_runtime_installed=True;tg._campaign_runtime_installed=True
