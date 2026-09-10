@@ -1,14 +1,49 @@
+import asyncio
 import httpx
+
 class TelegramError(RuntimeError):pass
+
+_RETRY_DELAYS=(0.5,1.5)
+
+def _retryable_response(response,data=None):
+    if response.status_code==429:return True
+    if 500<=response.status_code<=599:return True
+    if isinstance(data,dict):
+        try:return int(data.get('error_code') or 0)==429
+        except (TypeError,ValueError):pass
+    return False
+
+def _retry_after(data,default):
+    if isinstance(data,dict):
+        try:
+            value=float((data.get('parameters') or {}).get('retry_after') or 0)
+            if value>0:return min(value,30.0)
+        except (TypeError,ValueError):pass
+    return default
+
 async def telegram_api(token,method,payload=None):
     url=f"https://api.telegram.org/bot{token}/{method}"
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:r=await client.post(url,json=payload or {})
-    except httpx.HTTPError as exc:raise TelegramError(f"Telegram request failed: {exc}") from exc
-    try:data=r.json()
-    except ValueError as exc:raise TelegramError(f"Telegram returned an invalid response ({r.status_code})") from exc
-    if not r.is_success or not data.get("ok"):raise TelegramError(data.get("description") or f"HTTP {r.status_code}")
-    return data.get("result")
+    last_exc=None
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for attempt in range(len(_RETRY_DELAYS)+1):
+            try:r=await client.post(url,json=payload or {})
+            except (httpx.ConnectError,httpx.ConnectTimeout,httpx.ReadTimeout,httpx.RemoteProtocolError) as exc:
+                last_exc=exc
+                if attempt>=len(_RETRY_DELAYS):break
+                await asyncio.sleep(_RETRY_DELAYS[attempt]);continue
+            except httpx.HTTPError as exc:raise TelegramError(f"Telegram request failed: {type(exc).__name__}: {exc}") from exc
+            try:data=r.json()
+            except ValueError as exc:
+                if 500<=r.status_code<=599 and attempt<len(_RETRY_DELAYS):
+                    await asyncio.sleep(_RETRY_DELAYS[attempt]);continue
+                raise TelegramError(f"Telegram returned an invalid response ({r.status_code})") from exc
+            if not r.is_success or not data.get("ok"):
+                if _retryable_response(r,data) and attempt<len(_RETRY_DELAYS):
+                    await asyncio.sleep(_retry_after(data,_RETRY_DELAYS[attempt]));continue
+                raise TelegramError(data.get("description") or f"HTTP {r.status_code}")
+            return data.get("result")
+    raise TelegramError(f"Telegram request failed after {len(_RETRY_DELAYS)+1} attempts: {type(last_exc).__name__}: {last_exc}") from last_exc
+
 async def verify_bot(token):
     r=await telegram_api(token,"getMe");return {"bot_id":int(r["id"]),"username":r.get("username"),"first_name":r.get("first_name"),"can_join_groups":bool(r.get("can_join_groups",False)),"can_read_all_group_messages":bool(r.get("can_read_all_group_messages",False)),"supports_inline_queries":bool(r.get("supports_inline_queries",False))}
 async def set_webhook(token,webhook_url,secret_token):return {"registered":bool(await telegram_api(token,"setWebhook",{"url":webhook_url,"secret_token":secret_token,"allowed_updates":["message","callback_query"],"drop_pending_updates":False}))}
