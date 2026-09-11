@@ -14,6 +14,7 @@ import { installFlowTriggerExtras } from './flow-trigger-extras'
 import { installTelegramCommands } from './telegram-commands-mount'
 import { installSettingsUsersMount } from './settings-users-mount'
 import { installUserDetailsEditor } from './user-details-editor'
+import { installAgentChatVisibility } from './agent-chat-visibility'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -24,3 +25,4 @@ installFlowTriggerExtras()
 installTelegramCommands()
 installSettingsUsersMount()
 installUserDetailsEditor()
+installAgentChatVisibility()
