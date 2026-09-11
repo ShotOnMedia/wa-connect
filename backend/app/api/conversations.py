@@ -16,6 +16,14 @@ from app.services.whatsapp import WhatsAppError, send_text_message
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
 
+def _require_conversation_access(conversation: Conversation | None, current: User) -> Conversation:
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if current.role == UserRole.AGENT and conversation.assigned_user_id != current.id:
+        raise HTTPException(status_code=403, detail="This conversation is not assigned to you")
+    return conversation
+
+
 def _flow_session_out(db: Session, conversation_id: int) -> FlowSessionOut | None:
     session = db.scalar(select(FlowSession).where(FlowSession.conversation_id == conversation_id))
     if not session:
@@ -68,7 +76,9 @@ def list_conversations(
     db: Session = Depends(get_db),
 ):
     stmt = select(Conversation).options(selectinload(Conversation.contact)).order_by(Conversation.last_message_at.desc())
-    if assignment == "mine":
+    if current.role == UserRole.AGENT:
+        stmt = stmt.where(Conversation.assigned_user_id == current.id)
+    elif assignment == "mine":
         stmt = stmt.where(Conversation.assigned_user_id == current.id)
     elif assignment == "unassigned":
         stmt = stmt.where(Conversation.assigned_user_id.is_(None))
@@ -76,27 +86,21 @@ def list_conversations(
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
-def list_messages(conversation_id: int, db: Session = Depends(get_db)):
-    conversation = db.get(Conversation, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    stmt = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
+def list_messages(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
+    conversation = _require_conversation_access(db.get(Conversation, conversation_id), current)
+    stmt = select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
     return list(db.scalars(stmt).all())
 
 
 @router.get("/{conversation_id}/flow-session", response_model=FlowSessionOut | None)
 def get_flow_session(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
-    conversation = db.get(Conversation, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    _require_conversation_access(db.get(Conversation, conversation_id), current)
     return _flow_session_out(db, conversation_id)
 
 
 @router.post("/{conversation_id}/flow-session/reset", response_model=FlowSessionOut | None)
 def reset_flow_session(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
-    conversation = db.get(Conversation, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    _require_conversation_access(db.get(Conversation, conversation_id), current)
     session = db.scalar(select(FlowSession).where(FlowSession.conversation_id == conversation_id))
     if not session:
         return None
@@ -111,10 +115,9 @@ def reset_flow_session(conversation_id: int, current: User = Depends(require_use
 
 
 @router.post("/{conversation_id}/read", response_model=ConversationOut)
-def mark_conversation_read(conversation_id: int, db: Session = Depends(get_db)):
+def mark_conversation_read(conversation_id: int, current: User = Depends(require_user), db: Session = Depends(get_db)):
     conversation = db.scalar(select(Conversation).options(selectinload(Conversation.contact)).where(Conversation.id == conversation_id))
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _require_conversation_access(conversation, current)
     conversation.last_read_at = datetime.utcnow()
     db.commit()
     db.refresh(conversation)
@@ -122,10 +125,9 @@ def mark_conversation_read(conversation_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{conversation_id}/status", response_model=ConversationOut)
-def update_conversation_status(conversation_id: int, request: ConversationStatusUpdate, db: Session = Depends(get_db)):
+def update_conversation_status(conversation_id: int, request: ConversationStatusUpdate, current: User = Depends(require_user), db: Session = Depends(get_db)):
     conversation = db.scalar(select(Conversation).options(selectinload(Conversation.contact)).where(Conversation.id == conversation_id))
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _require_conversation_access(conversation, current)
     conversation.status = request.status
     db.commit()
     db.refresh(conversation)
@@ -143,16 +145,15 @@ def update_assignment(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    if current.role == UserRole.AGENT:
+        raise HTTPException(status_code=403, detail="Agents cannot change conversation assignments")
+
     if request.user_id is None:
-        if current.role == UserRole.AGENT and conversation.assigned_user_id not in {None, current.id}:
-            raise HTTPException(status_code=403, detail="Agents can only unassign conversations assigned to themselves")
         conversation.assigned_user_id = None
     else:
         target = db.get(User, request.user_id)
         if not target or not target.active:
             raise HTTPException(status_code=400, detail="Assigned user is unavailable")
-        if current.role == UserRole.AGENT and target.id != current.id:
-            raise HTTPException(status_code=403, detail="Agents can only assign conversations to themselves")
         conversation.assigned_user_id = target.id
 
     db.commit()
@@ -163,18 +164,13 @@ def update_assignment(
 @router.post("/{conversation_id}/messages", response_model=MessageOut)
 async def send_message(conversation_id: int, request: SendTextRequest, current: User = Depends(require_user), db: Session = Depends(get_db)):
     conversation = db.scalar(select(Conversation).options(selectinload(Conversation.contact)).where(Conversation.id == conversation_id))
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    if current.role == UserRole.AGENT and conversation.assigned_user_id not in {None, current.id}:
-        raise HTTPException(status_code=403, detail="This conversation is assigned to another agent")
+    conversation = _require_conversation_access(conversation, current)
     try:
         require_service_window(conversation)
     except ServiceWindowClosed as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if conversation.contact.blocked_at:
         raise HTTPException(status_code=409, detail="This contact is blocked and cannot receive free-form messages")
-    if conversation.assigned_user_id is None:
-        conversation.assigned_user_id = current.id
     phone_number = db.get(WhatsAppPhoneNumber, conversation.phone_number_id)
     if not phone_number:
         raise HTTPException(status_code=503, detail="Conversation phone number is unavailable")
