@@ -8,6 +8,7 @@ import './campaign-question-modal.css'
 import './user-details-editor.css'
 import './telegram-assignment-ui.css'
 import './telegram-inbox-parity.css'
+import './live-chat-emoji.css'
 import { installLiveChatDisplay } from './live-chat-display'
 import { installLiveChatExtras } from './live-chat-extras'
 import { installTelegramContactExtras } from './telegram-contact-extras'
@@ -19,6 +20,7 @@ import { installUserDetailsEditor } from './user-details-editor'
 import { installAgentChatVisibility } from './agent-chat-visibility'
 import { installTelegramAssignmentUi } from './telegram-assignment-ui'
 import { installTelegramInboxControls } from './telegram-inbox-controls'
+import { installLiveChatEmoji } from './live-chat-emoji'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -32,3 +34,4 @@ installUserDetailsEditor()
 installAgentChatVisibility()
 installTelegramAssignmentUi()
 installTelegramInboxControls()
+installLiveChatEmoji()
