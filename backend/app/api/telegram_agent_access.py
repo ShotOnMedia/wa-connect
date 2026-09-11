@@ -105,7 +105,7 @@ def assign(conversation_id:int,request:AssignmentIn,db:Session=Depends(get_db),u
         target=db.get(User,request.user_id)
         if not target or not target.active:raise HTTPException(status_code=400,detail="Assigned user is unavailable")
         c.assigned_user_id=target.id
-    db.commit();return _conversation_out(db.scalar(select(TelegramConversation).options(joinedload(TelegramConversation.contact),joinedload(TelegramConversation.bot),joinedload(TelegramConversation.messages)).where(TelegramConversation.id==c.id)).unique())
+    db.commit();db.refresh(c);return {"ok":True,"id":c.id,"assigned_user_id":c.assigned_user_id}
 
 @router.post("/conversations/{conversation_id}/messages")
 async def send(conversation_id:int,request:SendIn,db:Session=Depends(get_db),user:User=Depends(require_user)):
