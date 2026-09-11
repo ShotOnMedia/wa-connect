@@ -12,12 +12,12 @@ class ContactNoteCreate(BaseModel): body:str=Field(min_length=1,max_length=10000
 class ContactNoteOut(BaseModel):
     id:int; body:str; user_id:int; author_name:str; created_at:datetime; updated_at:datetime
 class ContactFieldDefinitionCreate(BaseModel):
-    key:str=Field(min_length=1,max_length=80,pattern=r"^[a-z][a-z0-9_]*$"); label:str=Field(min_length=1,max_length=120); field_type:ContactFieldType; options:list[str]=[]; required:bool=False; active:bool=True; sort_order:int=0
+    key:str=Field(min_length=1,max_length=80,pattern=r"^[a-z][a-z0-9_]*$"); label:str=Field(min_length=1,max_length=120); field_type:ContactFieldType; options:list[str]=[]; required:bool=False; active:bool=True; protected:bool=False; sort_order:int=0
 class ContactFieldDefinitionUpdate(BaseModel):
-    label:str|None=Field(default=None,min_length=1,max_length=120); field_type:ContactFieldType|None=None; options:list[str]|None=None; required:bool|None=None; active:bool|None=None; sort_order:int|None=None
+    label:str|None=Field(default=None,min_length=1,max_length=120); field_type:ContactFieldType|None=None; options:list[str]|None=None; required:bool|None=None; active:bool|None=None; protected:bool|None=None; sort_order:int|None=None
 class ContactFieldDefinitionOut(BaseModel):
-    id:int; key:str; label:str; field_type:ContactFieldType; options:list[str]=[]; required:bool; active:bool; sort_order:int
-class ContactCustomFieldOut(ContactFieldDefinitionOut): value:str|None=None
+    id:int; key:str; label:str; field_type:ContactFieldType; options:list[str]=[]; required:bool; active:bool; protected:bool=False; sort_order:int
+class ContactCustomFieldOut(ContactFieldDefinitionOut): value:str|None=None; writable:bool=True
 class ContactFieldValueUpdate(BaseModel): value:str|bool|int|float|None=None
 class ContactListOut(ContactOut):
     created_at:datetime; updated_at:datetime; conversation_count:int=0; last_message_at:datetime|None=None; tags:list[ContactTagOut]=[]
