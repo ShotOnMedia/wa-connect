@@ -11,6 +11,7 @@ import { installTelegramContactExtras } from './telegram-contact-extras'
 import { installLiveChatPagination } from './live-chat-pagination'
 import { installFlowTriggerExtras } from './flow-trigger-extras'
 import { installTelegramCommands } from './telegram-commands-mount'
+import { installSettingsUsersMount } from './settings-users-mount'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -19,3 +20,4 @@ installTelegramContactExtras()
 installLiveChatPagination()
 installFlowTriggerExtras()
 installTelegramCommands()
+installSettingsUsersMount()
