@@ -48,10 +48,10 @@ function validTimezone(value){
   try{new NativeDateTimeFormat('en',{timeZone:value}).format(new NativeDate());return true}catch(_){return false}
 }
 function zones(){
-  const browser=Intl.DateTimeFormat().resolvedOptions().timeZone
+  const browser=new NativeDateTimeFormat().resolvedOptions().timeZone
   let all=[]
   try{all=Intl.supportedValuesOf?.('timeZone')||[]}catch(_){all=[]}
-  const preferred=['UTC','Africa/Johannesburg','Africa/Cape_Town','Europe/London','Europe/Paris','America/New_York','America/Chicago','America/Los_Angeles','Asia/Dubai','Asia/Kolkata','Asia/Singapore','Australia/Sydney']
+  const preferred=['UTC','Africa/Johannesburg','Europe/London','Europe/Paris','America/New_York','America/Chicago','America/Los_Angeles','Asia/Dubai','Asia/Kolkata','Asia/Singapore','Australia/Sydney']
   return [...new Set([browser,...preferred,...all].filter(Boolean))]
 }
 function esc(value=''){return String(value).replace(/[&<>\"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[ch]))}
@@ -68,7 +68,7 @@ function accountControl(channel,items,current){
 }
 
 async function telegramToolbar(){
-  const header=document.querySelector('.tg-list > header');if(!header||header.querySelector('.live-chat-display-tools'))return
+  const header=document.querySelector('.tg-list > header');if(!header||document.querySelector('.tg-list > .live-chat-display-tools'))return
   const conversations=await api.telegramConversations().catch(()=>[])
   const items=[...new Map(conversations.map(c=>[String(c.bot?.id||''),{id:String(c.bot?.id||''),label:c.bot?.username?`@${c.bot.username}`:(c.bot?.first_name||`Telegram bot #${c.bot?.id}`)}])).values()].filter(x=>x.id)
   const tools=document.createElement('div');tools.className='live-chat-display-tools';tools.append(timezoneControl(),accountControl('telegram',items,localStorage.getItem(TG_ACCOUNT_KEY)||''));header.after(tools)
@@ -82,7 +82,7 @@ async function filterTelegramRows(){
 
 function activeButtonValue(selector,fallback){const el=document.querySelector(`${selector} button.active`);return el?.textContent?.trim().toLowerCase()||fallback}
 async function whatsappToolbar(){
-  const header=document.querySelector('.conversation-list > header');if(!header||header.querySelector('.live-chat-display-tools')||document.querySelector('.conversation-list > .live-chat-display-tools'))return
+  const header=document.querySelector('.conversation-list > header');if(!header||document.querySelector('.conversation-list > .live-chat-display-tools'))return
   const assignment=activeButtonValue('.assignment-filters','all'),conversations=await api.conversations(assignment).catch(()=>[])
   let labels={};try{const connections=await api.whatsappConnections();for(const c of connections||[]){const id=String(c.id||c.phone_number_id||'');if(id)labels[id]=c.display_phone_number||c.verified_name||c.name||`WhatsApp #${id}`}}catch(_){}
   const items=[...new Map(conversations.map(c=>{const id=String(c.phone_number_id||'');return[id,{id,label:labels[id]||`WhatsApp #${id}`}] })).values()].filter(x=>x.id)
