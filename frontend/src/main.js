@@ -18,6 +18,7 @@ import { installSettingsUsersMount } from './settings-users-mount'
 import { installUserDetailsEditor } from './user-details-editor'
 import { installAgentChatVisibility } from './agent-chat-visibility'
 import { installTelegramAssignmentUi } from './telegram-assignment-ui'
+import { installTelegramInboxControls } from './telegram-inbox-controls'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -30,3 +31,4 @@ installSettingsUsersMount()
 installUserDetailsEditor()
 installAgentChatVisibility()
 installTelegramAssignmentUi()
+installTelegramInboxControls()
