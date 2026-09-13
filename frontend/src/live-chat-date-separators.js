@@ -10,19 +10,51 @@ function cloneSeparator(source){
   return visual
 }
 
+function timestampElement(article){
+  return article.querySelector('time')||article.querySelector('footer span:first-child')
+}
+
+function rawTimestamp(article){
+  const el=timestampElement(article)
+  return el?.dataset?.rawTimestamp||el?.getAttribute?.('datetime')||''
+}
+
+function dayKey(raw){
+  if(!raw)return ''
+  const date=new Date(raw)
+  if(Number.isNaN(date.getTime()))return ''
+  const parts=new Intl.DateTimeFormat('en-CA',{year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date)
+  const values=Object.fromEntries(parts.map(part=>[part.type,part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
 function renderPane(pane){
-  // The display helper attaches its separator to the message article. Message
-  // articles have different widths/alignment in WhatsApp and Telegram, so a
-  // separator positioned inside them can never be reliably centred in the
-  // whole chat. Mirror it as a direct pane child instead.
   pane.querySelectorAll(':scope > .live-chat-date-separator-visual').forEach(el=>el.remove())
   const articles=[...pane.querySelectorAll(':scope > article')]
+  if(!articles.length)return
+
+  // Keep the original generated separators as the source of truth for the
+  // configured timezone/date label, but render them as full-width pane rows.
+  // Pagination can hide the first article of a day, so index every day's source
+  // before deciding which visible article should receive the separator.
+  const sourcesByDay=new Map()
   articles.forEach(article=>{
     const source=article.querySelector(':scope > .live-chat-date-separator')
-    if(!source)return
-    source.classList.add('live-chat-date-separator-source')
-    const visual=cloneSeparator(source)
-    pane.insertBefore(visual,article)
+    if(source){
+      source.classList.add('live-chat-date-separator-source')
+      const key=dayKey(rawTimestamp(article))
+      if(key&&!sourcesByDay.has(key))sourcesByDay.set(key,source)
+    }
+  })
+
+  const visible=articles.filter(article=>!article.classList.contains('chat-history-hidden'))
+  let previousDay=''
+  visible.forEach(article=>{
+    const key=dayKey(rawTimestamp(article))
+    if(!key||key===previousDay)return
+    const source=sourcesByDay.get(key)||article.querySelector(':scope > .live-chat-date-separator')
+    if(source)pane.insertBefore(cloneSeparator(source),article)
+    previousDay=key
   })
 }
 
@@ -39,7 +71,7 @@ function schedule(){
 
 export function installLiveChatDateSeparators(){
   const observer=new MutationObserver(schedule)
-  observer.observe(document.body,{subtree:true,childList:true,characterData:true})
+  observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class']})
   window.addEventListener('wa-connect-timezone-change',schedule)
   schedule()
   window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true})
