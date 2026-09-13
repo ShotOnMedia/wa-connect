@@ -22,6 +22,7 @@ import { installTelegramAssignmentUi } from './telegram-assignment-ui'
 import { installTelegramInboxControls } from './telegram-inbox-controls'
 import { installLiveChatEmoji } from './live-chat-emoji'
 import { installLiveChatDateSeparators } from './live-chat-date-separators'
+import { installTelegramMessageTimestamps } from './telegram-message-timestamps'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -37,3 +38,4 @@ installTelegramAssignmentUi()
 installTelegramInboxControls()
 installLiveChatEmoji()
 installLiveChatDateSeparators()
+installTelegramMessageTimestamps()
