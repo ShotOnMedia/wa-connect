@@ -21,6 +21,7 @@ import { installAgentChatVisibility } from './agent-chat-visibility'
 import { installTelegramAssignmentUi } from './telegram-assignment-ui'
 import { installTelegramInboxControls } from './telegram-inbox-controls'
 import { installLiveChatEmoji } from './live-chat-emoji'
+import { installLiveChatDateSeparators } from './live-chat-date-separators'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -35,3 +36,4 @@ installAgentChatVisibility()
 installTelegramAssignmentUi()
 installTelegramInboxControls()
 installLiveChatEmoji()
+installLiveChatDateSeparators()
