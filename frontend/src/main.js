@@ -23,6 +23,7 @@ import { installTelegramInboxControls } from './telegram-inbox-controls'
 import { installLiveChatEmoji } from './live-chat-emoji'
 import { installLiveChatDateSeparators } from './live-chat-date-separators'
 import { installTelegramMessageTimestamps } from './telegram-message-timestamps'
+import { installLiveChatTakeover } from './live-chat-takeover'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -39,3 +40,4 @@ installTelegramInboxControls()
 installLiveChatEmoji()
 installLiveChatDateSeparators()
 installTelegramMessageTimestamps()
+installLiveChatTakeover()
