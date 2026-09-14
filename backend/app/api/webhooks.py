@@ -9,6 +9,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app.core.config import settings
 from app.core.database import get_db
 from app.models import Conversation
+from app.services.conversation_control import automation_paused
 from app.services.flow_runtime import run_flows_for_inbound
 from app.services.inbound_media import persist_inbound_chat_media, prepare_waiting_image_capture, restore_captured_image_field
 from app.services.webhook import process_webhook_payload
@@ -48,10 +49,11 @@ async def receive_webhook(request:Request,x_hub_signature_256:str|None=Header(de
             conversation=db.scalar(select(Conversation).where(Conversation.id==inbound_message.conversation_id))
             if conversation:
                 await persist_inbound_chat_media(db,conversation,inbound_message,"whatsapp")
-                capture=await prepare_waiting_image_capture(db,conversation,inbound_message,"whatsapp")
-                routing_value=_flow_reply_value(inbound_message)
-                if routing_value:set_committed_value(inbound_message,"body",routing_value)
-                flows_executed+=await run_flows_for_inbound(db,conversation,inbound_message)
+                if not automation_paused(db,"whatsapp",conversation.id):
+                    capture=await prepare_waiting_image_capture(db,conversation,inbound_message,"whatsapp")
+                    routing_value=_flow_reply_value(inbound_message)
+                    if routing_value:set_committed_value(inbound_message,"body",routing_value)
+                    flows_executed+=await run_flows_for_inbound(db,conversation,inbound_message)
         except Exception:logger.exception("Media persistence/flow execution failed for inbound message id=%s",inbound_message.id)
         finally:
             if conversation and capture:
