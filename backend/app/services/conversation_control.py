@@ -64,3 +64,22 @@ def set_human_control(db: Session, *, workspace_id: int, channel: str, conversat
         actor=actor,
     )
     return control
+
+
+def _install_telegram_guard():
+    """Guard the core Telegram runtime before telegram_phone_flow captures it."""
+    from app.services import telegram_flow_runtime as runtime
+    if getattr(runtime, "_human_takeover_guard_installed", False):
+        return
+    original = runtime.run_telegram_flows_for_inbound
+
+    async def guarded(db, conversation, inbound):
+        if automation_paused(db, "telegram", conversation.id):
+            return 0
+        return await original(db, conversation, inbound)
+
+    runtime.run_telegram_flows_for_inbound = guarded
+    runtime._human_takeover_guard_installed = True
+
+
+_install_telegram_guard()
