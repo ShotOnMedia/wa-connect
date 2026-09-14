@@ -66,20 +66,30 @@ def set_human_control(db: Session, *, workspace_id: int, channel: str, conversat
     return control
 
 
-def _install_telegram_guard():
-    """Guard the core Telegram runtime before telegram_phone_flow captures it."""
+def _install_telegram_guards():
+    """Install before telegram_phone_flow/webhook capture their runtime functions."""
+    from app.services import telegram_flow_queue as queue
     from app.services import telegram_flow_runtime as runtime
-    if getattr(runtime, "_human_takeover_guard_installed", False):
-        return
-    original = runtime.run_telegram_flows_for_inbound
+    if not getattr(runtime, "_human_takeover_guard_installed", False):
+        original = runtime.run_telegram_flows_for_inbound
 
-    async def guarded(db, conversation, inbound):
-        if automation_paused(db, "telegram", conversation.id):
-            return 0
-        return await original(db, conversation, inbound)
+        async def guarded(db, conversation, inbound):
+            if automation_paused(db, "telegram", conversation.id):
+                return 0
+            return await original(db, conversation, inbound)
 
-    runtime.run_telegram_flows_for_inbound = guarded
-    runtime._human_takeover_guard_installed = True
+        runtime.run_telegram_flows_for_inbound = guarded
+        runtime._human_takeover_guard_installed = True
+    if not getattr(queue, "_human_takeover_guard_installed", False):
+        original_drain = queue.drain_telegram_flow_queue
+
+        async def guarded_drain(db, conversation):
+            if automation_paused(db, "telegram", conversation.id):
+                return 0
+            return await original_drain(db, conversation)
+
+        queue.drain_telegram_flow_queue = guarded_drain
+        queue._human_takeover_guard_installed = True
 
 
-_install_telegram_guard()
+_install_telegram_guards()
