@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.services.inbound_media import persist_inbound_chat_media, prepare_waiting_image_capture, restore_captured_image_field
 from app.services.system_fields import sync_telegram_system_fields
@@ -16,6 +19,26 @@ from app.services.telegram_phone_flow import run_telegram_flows_for_inbound
 from app.telegram_models import TelegramBot, TelegramContact, TelegramConversation, TelegramMessage
 
 router=APIRouter(prefix="/webhooks/telegram",tags=["Telegram webhooks"]);logger=logging.getLogger(__name__)
+
+# Keep a reserve of DB capacity for health/auth/live-chat traffic. A Session
+# dependency is cheap until its first query, so the gate is acquired before the
+# webhook performs any DB work. This is per API worker, which matches the
+# production recommendation of one worker for migration/startup safety.
+_telegram_webhook_slots=asyncio.Semaphore(max(1,settings.telegram_webhook_concurrency))
+
+@asynccontextmanager
+async def _telegram_webhook_slot():
+    acquired=False
+    try:
+        try:
+            await asyncio.wait_for(_telegram_webhook_slots.acquire(),timeout=max(0.1,settings.telegram_webhook_queue_timeout))
+            acquired=True
+        except TimeoutError as exc:
+            logger.warning("Telegram webhook back-pressure: concurrency limit %s reached",settings.telegram_webhook_concurrency)
+            raise HTTPException(status_code=503,detail="Telegram webhook capacity busy; retry this update") from exc
+        yield
+    finally:
+        if acquired:_telegram_webhook_slots.release()
 
 def detect_message_type(message:dict)->tuple[str,str|None]:
     if "text" in message:return "text",message.get("text")
@@ -52,6 +75,10 @@ def _upsert_contact_conversation(db,bot,sender,chat):
 
 @router.post("/{bot_id}")
 async def receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api_secret_token:str|None=Header(default=None),db:Session=Depends(get_db)):
+    async with _telegram_webhook_slot():
+        return await _receive_telegram_webhook(bot_id,request,x_telegram_bot_api_secret_token,db)
+
+async def _receive_telegram_webhook(bot_id:int,request:Request,x_telegram_bot_api_secret_token:str|None,db:Session):
     bot=db.scalar(select(TelegramBot).where(TelegramBot.bot_id==bot_id,TelegramBot.active.is_(True)))
     if not bot:raise HTTPException(status_code=404,detail="Telegram bot not found")
     if not x_telegram_bot_api_secret_token or x_telegram_bot_api_secret_token!=bot.webhook_secret:raise HTTPException(status_code=401,detail="Invalid Telegram webhook secret")
