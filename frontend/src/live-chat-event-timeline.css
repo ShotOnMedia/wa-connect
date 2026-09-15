@@ -1,0 +1,7 @@
+.lc-system-event{display:flex!important;align-items:center;justify-content:center;gap:8px;width:100%;margin:14px 0!important;padding:0 16px!important;box-sizing:border-box;clear:both;color:#66786f;font-size:10px;line-height:1.25;text-align:center;box-shadow:none!important;background:transparent!important}
+.lc-system-event:before,.lc-system-event:after{content:'';height:1px;flex:1 1 auto;max-width:150px;background:#d7e1dc}
+.lc-system-event span{display:inline-flex;align-items:center;gap:4px;padding:5px 9px;border:1px solid #d7e1dc;border-radius:999px;background:#f9fbfa;color:#52675e;font-weight:700;white-space:normal}
+.lc-system-event time{color:#8a9992;font-size:9px;white-space:nowrap}
+.lc-system-event-human_takeover span{border-color:#efc47e;background:#fffaf1;color:#89570c}
+.lc-system-event-automation_resumed span{border-color:#b9dfcc;background:#f4fbf7;color:#247451}
+.lc-system-event-flow_completed span{border-color:#b9dfcc;background:#f4fbf7;color:#247451}
