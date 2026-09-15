@@ -1,0 +1,10 @@
+.live-chat-search{position:relative;display:flex;align-items:center;margin:10px 12px;padding:0 8px;border:1px solid #d7e1dc;border-radius:9px;background:#fff;box-shadow:0 1px 2px rgba(18,52,40,.03)}
+.live-chat-search:focus-within{border-color:#4cae86;box-shadow:0 0 0 3px rgba(52,150,109,.09)}
+.live-chat-search-icon{flex:0 0 auto;color:#71847b;font-size:19px;line-height:1;transform:rotate(-18deg)}
+.live-chat-search input{min-width:0;flex:1;border:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;padding:9px 7px!important;font:inherit;font-size:12px;color:#253b32}
+.live-chat-search input::-webkit-search-cancel-button{display:none}
+.live-chat-search input.searching{opacity:.65}
+.live-chat-search button{display:none;flex:0 0 auto;width:24px;height:24px;padding:0!important;border:0!important;border-radius:50%!important;background:#edf2ef!important;color:#60736a!important;font-size:17px!important;line-height:22px!important;cursor:pointer}
+.live-chat-search.has-value button{display:block}
+.live-chat-search-empty{padding:25px 16px;text-align:center;color:#74867e;font-size:12px}
+.tg-list .live-chat-search{margin-top:10px;margin-bottom:10px}
