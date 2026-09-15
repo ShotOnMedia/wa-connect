@@ -1,7 +1,7 @@
 import { api } from './api'
 import './live-chat-takeover.css'
 
-let timer=null,busy=false,lastKey='',rerender=false,selectionVersion=0
+let timer=null,busy=false,lastKey='',rerender=false,selectionVersion=0,immediateQueued=false
 const BASE=import.meta.env.VITE_API_BASE_URL||'/api/v1'
 
 async function controlRequest(path,options={}){
@@ -34,29 +34,47 @@ async function render(){
     const human=!!control.human_control
     root.innerHTML=`<div class="lc-takeover-head"><div><small>CONTROL</small><strong>${human?'Human Agent':'Automation'}</strong></div><span class="${human?'human':'auto'}">${human?'HUMAN':'AUTO'}</span></div><p>${human?'Automation is paused. Incoming replies remain in Live Chat until the conversation is returned to automation.':'Automation is active for this conversation.'}</p><button type="button" class="lc-takeover-btn ${human?'resume':'take'}">${human?'↪ Return to automation':'✋ Take control'}</button><details class="lc-event-log"><summary>Conversation events <span>${events.length}</span></summary><div>${events.length?events.slice().reverse().map(e=>`<div class="lc-event"><i></i><div><b>${esc(e.summary)}</b><small>${esc(formatTime(e.created_at))}</small></div></div>`).join(''):'<p>No control events yet.</p>'}</div></details><p class="lc-takeover-message" hidden></p>`
     const anchor=current.panel.querySelector('.live-chat-extras,.tg-profile-actions,.tg-whatsapp-summary,.snapshot');if(anchor)anchor.insertAdjacentElement('afterend',root);else current.panel.appendChild(root)
-    root.querySelector('.lc-takeover-btn').onclick=async e=>{const btn=e.currentTarget,action=human?'resume':'takeover';btn.disabled=true;btn.textContent=human?'Returning…':'Taking control…';try{await controlRequest(`/${channel}/${conversation.id}/${action}`,{method:'POST'});lastKey='';selectionVersion++;schedule(20)}catch(err){const msg=root.querySelector('.lc-takeover-message');msg.textContent=err.message;msg.hidden=false;btn.disabled=false;btn.textContent=human?'↪ Return to automation':'✋ Take control'}}
+    root.querySelector('.lc-takeover-btn').onclick=async e=>{const btn=e.currentTarget,action=human?'resume':'takeover';btn.disabled=true;btn.textContent=human?'Returning…':'Taking control…';try{await controlRequest(`/${channel}/${conversation.id}/${action}`,{method:'POST'});lastKey='';selectionVersion++;scheduleImmediate()}catch(err){const msg=root.querySelector('.lc-takeover-message');msg.textContent=err.message;msg.hidden=false;btn.disabled=false;btn.textContent=human?'↪ Return to automation':'✋ Take control'}}
     lastKey=key
-  }catch(_){
+  }catch(err){
+    console.warn('[takeover] unable to render conversation control',err)
   }finally{
     busy=false
-    if(rerender){rerender=false;schedule(0)}
+    if(rerender){rerender=false;scheduleImmediate()}
   }
 }
-function schedule(delay=80){clearTimeout(timer);timer=setTimeout(render,delay)}
+function schedule(delay=80){
+  if(immediateQueued)return
+  clearTimeout(timer)
+  timer=setTimeout(render,delay)
+}
+function scheduleImmediate(){
+  clearTimeout(timer)
+  if(immediateQueued)return
+  immediateQueued=true
+  queueMicrotask(()=>{
+    immediateQueued=false
+    render()
+  })
+}
 function conversationChanged(){
   selectionVersion++
   lastKey=''
   document.querySelectorAll('.lc-takeover').forEach(el=>el.remove())
-  schedule(0)
+  scheduleImmediate()
 }
 export function installLiveChatTakeover(){
-  const observer=new MutationObserver(()=>schedule())
+  const observer=new MutationObserver(()=>{
+    // DOM activity in a busy chat can be continuous. Never let that debounce an
+    // explicit conversation-selection render indefinitely.
+    if(!document.querySelector('.lc-takeover'))schedule(120)
+  })
   observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']})
   document.addEventListener('click',event=>{
     if(event.target.closest('.tg-list .row,.conversation-list .conversation-item,.conversation-list .row')){
       requestAnimationFrame(()=>requestAnimationFrame(conversationChanged))
     }
   },true)
-  schedule(0)
+  scheduleImmediate()
   window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true})
 }
