@@ -28,22 +28,8 @@ import { installTelegramMessageTimestamps } from './telegram-message-timestamps'
 import { installLiveChatTakeover } from './live-chat-takeover'
 import { installLiveChatSearch } from './live-chat-search'
 import { installLiveChatEventTimeline } from './live-chat-event-timeline'
+import { installLiveChatAgentTools } from './live-chat-agent-tools'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
-installLiveChatExtras()
-installTelegramContactExtras()
-installLiveChatPagination()
-installFlowTriggerExtras()
-installTelegramCommands()
-installSettingsUsersMount()
-installUserDetailsEditor()
-installAgentChatVisibility()
-installTelegramAssignmentUi()
-installTelegramInboxControls()
-installLiveChatEmoji()
-installLiveChatDateSeparators()
-installTelegramMessageTimestamps()
-installLiveChatTakeover()
-installLiveChatSearch()
-installLiveChatEventTimeline()
+installLiveChatExtras();installTelegramContactExtras();installLiveChatPagination();installFlowTriggerExtras();installTelegramCommands();installSettingsUsersMount();installUserDetailsEditor();installAgentChatVisibility();installTelegramAssignmentUi();installTelegramInboxControls();installLiveChatEmoji();installLiveChatDateSeparators();installTelegramMessageTimestamps();installLiveChatTakeover();installLiveChatSearch();installLiveChatEventTimeline();installLiveChatAgentTools()
