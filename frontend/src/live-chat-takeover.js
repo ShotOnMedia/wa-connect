@@ -1,7 +1,7 @@
 import { api } from './api'
 import './live-chat-takeover.css'
 
-let timer=null,busy=false,lastKey='',rerender=false,selectionVersion=0,immediateQueued=false
+let timer=null,busy=false,lastKey='',rerender=false,selectionVersion=0,immediateQueued=false,retryTimer=null
 const BASE=import.meta.env.VITE_API_BASE_URL||'/api/v1'
 
 async function controlRequest(path,options={}){
@@ -15,6 +15,11 @@ function selectedWaId(panel){return [...panel.querySelectorAll('p,span')].map(x=
 async function selectedWhatsApp(){const panel=document.querySelector('.shell:not(.wide-view) .contact-panel');if(!panel)return null;const waId=selectedWaId(panel);if(!waId)return null;const rows=await api.conversations('all').catch(()=>[]);const c=rows.find(x=>String(x.contact?.wa_id||'').replace(/\D/g,'')===waId.replace(/\D/g,''));return c?{channel:'whatsapp',conversation:c,panel}:null}
 async function selectedTelegram(){const root=document.querySelector('.tg-chat'),panel=root?.querySelector('.customer-panel'),list=root?.querySelector('.tg-list');if(!root||!panel||!list)return null;const rows=[...list.querySelectorAll(':scope > .row')],index=rows.findIndex(r=>r.classList.contains('active'));if(index<0)return null;const conversations=await api.telegramConversations().catch(()=>[]),c=conversations[index];return c?{channel:'telegram',conversation:c,panel}:null}
 function formatTime(v){if(!v)return'';try{return new Date(`${String(v).replace(' ','T')}Z`).toLocaleString()}catch(_){return String(v)}}
+function retryInitialMount(){
+  if(document.querySelector('.lc-takeover')){clearTimeout(retryTimer);retryTimer=null;return}
+  clearTimeout(retryTimer)
+  retryTimer=setTimeout(()=>{scheduleImmediate();retryInitialMount()},250)
+}
 async function render(){
   if(busy){rerender=true;return}
   busy=true
@@ -36,6 +41,7 @@ async function render(){
     const anchor=current.panel.querySelector('.live-chat-extras,.tg-profile-actions,.tg-whatsapp-summary,.snapshot');if(anchor)anchor.insertAdjacentElement('afterend',root);else current.panel.appendChild(root)
     root.querySelector('.lc-takeover-btn').onclick=async e=>{const btn=e.currentTarget,action=human?'resume':'takeover';btn.disabled=true;btn.textContent=human?'Returning…':'Taking control…';try{await controlRequest(`/${channel}/${conversation.id}/${action}`,{method:'POST'});lastKey='';selectionVersion++;scheduleImmediate()}catch(err){const msg=root.querySelector('.lc-takeover-message');msg.textContent=err.message;msg.hidden=false;btn.disabled=false;btn.textContent=human?'↪ Return to automation':'✋ Take control'}}
     lastKey=key
+    clearTimeout(retryTimer);retryTimer=null
   }catch(err){
     console.warn('[takeover] unable to render conversation control',err)
   }finally{
@@ -62,11 +68,10 @@ function conversationChanged(){
   lastKey=''
   document.querySelectorAll('.lc-takeover').forEach(el=>el.remove())
   scheduleImmediate()
+  retryInitialMount()
 }
 export function installLiveChatTakeover(){
   const observer=new MutationObserver(()=>{
-    // DOM activity in a busy chat can be continuous. Never let that debounce an
-    // explicit conversation-selection render indefinitely.
     if(!document.querySelector('.lc-takeover'))schedule(120)
   })
   observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']})
@@ -76,5 +81,9 @@ export function installLiveChatTakeover(){
     }
   },true)
   scheduleImmediate()
-  window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true})
+  // Telegram selects its first conversation asynchronously during component
+  // mount. Keep a short independent retry alive until that initial selection
+  // exists and the control card has actually been inserted.
+  retryInitialMount()
+  window.addEventListener('beforeunload',()=>{observer.disconnect();clearTimeout(retryTimer)},{once:true})
 }
