@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
 from app.api.conversation_control import router as conversation_control_router
+from app.api.conversation_event_actions import router as conversation_event_actions_router
 from app.api.default_actions import router as default_actions_router
 from app.api.contact_fields import router as contact_fields_router
 from app.api.contacts import router as contacts_router
@@ -33,4 +34,7 @@ install_developer_api_resolver()
 
 api_router=APIRouter();api_router.include_router(auth_router);api_router.include_router(webhooks_router);api_router.include_router(telegram_webhooks_router);api_router.include_router(inbound_media_router)
 api_router.include_router(developer_api_actions_router);api_router.include_router(developer_api_body_router);api_router.include_router(developer_api_flow_trigger_router);api_router.include_router(developer_api_external_router);api_router.include_router(developer_api_admin_router)
+# Event-aware action routes intentionally precede the legacy conversation routers
+# so assignment/status/reset actions are audited without changing frontend URLs.
+api_router.include_router(conversation_event_actions_router)
 api_router.include_router(conversations_router,dependencies=[Depends(require_user)]);api_router.include_router(conversation_control_router);api_router.include_router(live_chat_search_router);api_router.include_router(contacts_router,dependencies=[Depends(require_user)]);api_router.include_router(contact_fields_router,dependencies=[Depends(require_user)]);api_router.include_router(flow_duplicate_router,dependencies=[Depends(require_user)]);api_router.include_router(flows_router,dependencies=[Depends(require_user)]);api_router.include_router(campaigns_router);api_router.include_router(default_actions_router);api_router.include_router(user_input_submissions_router,dependencies=[Depends(require_user)]);api_router.include_router(http_apis_router);api_router.include_router(settings_router,dependencies=[Depends(require_user)]);api_router.include_router(media_storage_settings_router,dependencies=[Depends(require_user)]);api_router.include_router(telegram_agent_access_router);api_router.include_router(telegram_router);api_router.include_router(telegram_commands_router);api_router.include_router(telegram_flow_info_router);api_router.include_router(users_router,dependencies=[Depends(require_user)])
