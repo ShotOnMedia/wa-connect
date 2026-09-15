@@ -9,6 +9,7 @@ import './user-details-editor.css'
 import './telegram-assignment-ui.css'
 import './telegram-inbox-parity.css'
 import './live-chat-emoji.css'
+import './live-chat-search.css'
 import { installLiveChatDisplay } from './live-chat-display'
 import { installLiveChatExtras } from './live-chat-extras'
 import { installTelegramContactExtras } from './telegram-contact-extras'
@@ -24,6 +25,7 @@ import { installLiveChatEmoji } from './live-chat-emoji'
 import { installLiveChatDateSeparators } from './live-chat-date-separators'
 import { installTelegramMessageTimestamps } from './telegram-message-timestamps'
 import { installLiveChatTakeover } from './live-chat-takeover'
+import { installLiveChatSearch } from './live-chat-search'
 
 installLiveChatDisplay()
 createApp(Root).mount('#app')
@@ -41,3 +43,4 @@ installLiveChatEmoji()
 installLiveChatDateSeparators()
 installTelegramMessageTimestamps()
 installLiveChatTakeover()
+installLiveChatSearch()
