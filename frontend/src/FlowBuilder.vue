@@ -13,21 +13,18 @@ function selectedBuilderFlowId(){const el=builderHost.value?.querySelector('.too
 async function syncInterruptSetting(){
   const id=selectedBuilderFlowId();if(!id)return
   try{
-    const [flow,graph]=await Promise.all([api.flow(id),api.flowGraph(id)])
+    const [flow,setting]=await Promise.all([api.flow(id),api.flowInterrupt(id)])
     currentFlow.value=flow
-    const trigger=(graph.nodes||[]).find(n=>n.node_type==='trigger')
-    interruptEnabled.value=!!trigger?.config?.interrupt_active_flow
+    interruptEnabled.value=!!setting?.interrupt_active_flow
   }catch(e){openError.value=e.message||'Could not load flow interrupt setting'}
 }
 async function toggleInterrupt(){
   const id=selectedBuilderFlowId();if(!id||interruptSaving.value)return
   interruptSaving.value=true;openError.value=''
   try{
-    const graph=await api.flowGraph(id),trigger=(graph.nodes||[]).find(n=>n.node_type==='trigger')
-    if(!trigger)throw new Error('This flow has no Start Bot Flow block.')
     const next=!interruptEnabled.value
-    await api.updateFlowNode(id,trigger.id,{config:{...(trigger.config||{}),interrupt_active_flow:next}})
-    interruptEnabled.value=next
+    const setting=await api.setFlowInterrupt(id,next)
+    interruptEnabled.value=!!setting?.interrupt_active_flow
   }catch(e){openError.value=e.message||'Could not save flow interrupt setting'}finally{interruptSaving.value=false}
 }
 function builderChanged(event){if(event.target?.matches?.('.toolbar > select'))setTimeout(syncInterruptSetting,0)}
@@ -42,13 +39,7 @@ async function openBuilder(id=null){
     if(!flowId){
       const isTelegram=props.channel==='telegram'
       const channelName=isTelegram?'Telegram':'WhatsApp'
-      const created=await api.createFlow({
-        name:`Untitled ${channelName} Flow`,
-        description:isTelegram?'Telegram automation flow':'',
-        trigger_type:isTelegram?'keyword':'manual',
-        trigger_value:isTelegram?'hello':null,
-        status:'draft'
-      })
+      const created=await api.createFlow({name:`Untitled ${channelName} Flow`,description:isTelegram?'Telegram automation flow':'',trigger_type:isTelegram?'keyword':'manual',trigger_value:isTelegram?'hello':null,status:'draft'})
       flowId=created.id
     }
     editing.value=true
@@ -57,20 +48,12 @@ async function openBuilder(id=null){
     const choose=()=>{
       const select=builderHost.value?.querySelector('.flow-picker > select, .toolbar > select')
       if(select&&[...select.options].some(o=>Number(o.value)===Number(flowId))){
-        select.value=String(flowId)
-        select.dispatchEvent(new Event('change',{bubbles:true}))
-        setTimeout(syncInterruptSetting,75)
-        return
+        select.value=String(flowId);select.dispatchEvent(new Event('change',{bubbles:true}));setTimeout(syncInterruptSetting,75);return
       }
       if(tries++<30)setTimeout(choose,75)
     }
     choose()
-  }catch(e){
-    openError.value=e.message||'Could not open flow builder'
-    editing.value=false
-  }finally{
-    opening.value=false
-  }
+  }catch(e){openError.value=e.message||'Could not open flow builder';editing.value=false}finally{opening.value=false}
 }
 function backToLibrary(){editing.value=false;currentFlow.value=null;interruptEnabled.value=false;setChannel()}
 </script>
@@ -88,10 +71,7 @@ function backToLibrary(){editing.value=false;currentFlow.value=null;interruptEna
     <p v-if="openError" class="builder-error">{{openError}}</p>
     <div class="builder-canvas"><VisualFlowBuilder :current-user="currentUser" :channel="channel"/></div>
   </div>
-  <template v-else>
-    <p v-if="openError" class="open-error">{{openError}}</p>
-    <FlowsLibrary :channel="channel" @edit="openBuilder" @create="openBuilder()"/>
-  </template>
+  <template v-else><p v-if="openError" class="open-error">{{openError}}</p><FlowsLibrary :channel="channel" @edit="openBuilder" @create="openBuilder()"/></template>
 </template>
 
 <style scoped>
