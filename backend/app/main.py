@@ -15,6 +15,7 @@ from app import http_api_models  # noqa: F401 - registers reusable HTTP API tabl
 from app import developer_api_models  # noqa: F401 - registers Developer API tables
 from app import campaign_models  # noqa: F401 - registers reusable questionnaire campaigns
 from app import default_action_models  # noqa: F401 - registers channel Default Actions
+from app import canned_response_models  # noqa: F401 - registers Live Chat canned responses
 from app.flow_graph_integrity import repair_flow_start_nodes
 from app.services.flow_http_diagnostics import install as install_flow_http_diagnostics
 from app.services.http_api_tracking_checkpoint import install as install_http_api_tracking_checkpoint
@@ -30,50 +31,14 @@ from app.services.button_start_flow import install as install_button_start_flow
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # v0.2.0 bootstrap. Alembic owns schema changes; create_all remains temporarily for legacy bootstrap compatibility.
     Base.metadata.create_all(bind=engine)
-    install_flow_http_diagnostics()
-    # HttpApiCall references FlowRun. Commit completed call diagnostics before
-    # the independent flow-tracking session updates the parent run row, avoiding
-    # InnoDB FK lock contention.
-    install_http_api_tracking_checkpoint()
-    install_whatsapp_interactive_snapshot()
-    install_question_choices()
-    install_campaign_runtime()
-    # A dynamic-list button choice is durable user input. Checkpoint it before
-    # continuing to downstream nodes, and close a stale waiting session if a
-    # later node fails.
-    install_telegram_dynamic_checkpoint()
-    # Button Start flow actions wrap the final Telegram resume chain, including
-    # campaign/dynamic-selection resume behavior installed above.
-    install_button_start_flow()
-    # Default Actions wraps the channel matchers. Install it first, then let
-    # multi-trigger replace the native keyword predicate used by that wrapper.
-    install_default_actions()
-    install_multi_trigger()
-    # Recovery/menu/cancel flows may explicitly opt in to interrupting a valid
-    # waiting interaction. Install last so Campaign and checkpoint resume hooks
-    # remain inside the interrupt boundary.
-    install_flow_interrupts()
+    install_flow_http_diagnostics();install_http_api_tracking_checkpoint();install_whatsapp_interactive_snapshot();install_question_choices();install_campaign_runtime();install_telegram_dynamic_checkpoint();install_button_start_flow();install_default_actions();install_multi_trigger();install_flow_interrupts()
     with SessionLocal() as db:
-        ensure_bootstrap_admin(db)
-        repair_flow_start_nodes(db)
+        ensure_bootstrap_admin(db);repair_flow_start_nodes(db)
     yield
 
-
 app = FastAPI(title=settings.app_name, version=__version__, debug=settings.app_debug, lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 app.include_router(api_router, prefix=settings.api_prefix)
-
-
 @app.get("/health")
-def health():
-    return {"status": "ok", "version": __version__}
+def health(): return {"status":"ok","version":__version__}
