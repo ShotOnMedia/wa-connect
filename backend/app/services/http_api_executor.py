@@ -15,10 +15,6 @@ from app.telegram_models import TelegramContactFieldValue
 
 logger = logging.getLogger(__name__)
 
-# Flow HTTP calls must never be able to monopolise the API indefinitely.  The
-# value remains configurable per HTTP API, but is bounded to a sane runtime
-# range so a typo such as 600 seconds cannot exhaust the SQLAlchemy pool while
-# Telegram/WhatsApp retry webhooks.
 DEFAULT_TIMEOUT_SECONDS = 15.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 30.0
@@ -64,8 +60,6 @@ def _timeout_seconds(value: Any) -> float:
 
 def extract_path(data: Any, path: str):
     path = str(path or "").strip()
-    # `$` is the canonical whole-response selector. Empty is accepted here as
-    # a convenience for callers, while the mapping UI stores `$` explicitly.
     if path in {"", "$"}:
         return data
     if path.startswith("$."):
@@ -74,7 +68,6 @@ def extract_path(data: Any, path: str):
         path = path[1:]
     current = data
     for part in [p for p in re.split(r"\.(?![^\[]*\])", path) if p]:
-        # Support root/list indexes such as [0] as well as products[0].
         index_only = re.fullmatch(r"\[(\d+)\]", part)
         if index_only:
             if not isinstance(current, list) or int(index_only.group(1)) >= len(current):
@@ -99,7 +92,6 @@ def extract_path(data: Any, path: str):
 
 
 def flatten_paths(data: Any, prefix: str = "", limit: int = 250):
-    # Always expose the complete JSON document as a selectable response path.
     root_preview = json.dumps(data, ensure_ascii=False) if isinstance(data, (dict, list)) else ("null" if data is None else str(data))
     rows = [{"path": "$", "preview": root_preview[:180], "kind": "root"}]
 
@@ -172,10 +164,6 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
     error = None
     success = False
 
-    # Build every request value while the ORM objects/session are available.
-    # expire_on_commit=False is configured for this project, so after the
-    # checkpoint below the HttpApi object remains safe to read without keeping
-    # a database connection checked out during the external network wait.
     method = str(api.method or "GET").upper()
     timeout_seconds = _timeout_seconds(api.timeout_seconds)
     headers = _pairs(_loads(api.headers_json, []), render)
@@ -193,12 +181,8 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
     elif body_type in {"form", "x-www-form-urlencoded"} and body is not None:
         kwargs["data"] = body
 
-    # IMPORTANT: flow/webhook sessions have already performed DB work before
-    # reaching an HTTP node.  Committing here creates a durable checkpoint and
-    # releases that SQLAlchemy connection back to the pool before we wait on a
-    # third-party server.  Without this, repeated Telegram/WhatsApp webhook
-    # retries can occupy the entire DB pool and make unrelated endpoints such
-    # as /auth/me time out as well.
+    # Durable pre-I/O checkpoint: release the request session's checked-out
+    # connection before awaiting an external service.
     db.commit()
 
     try:
@@ -217,7 +201,7 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
         success = 200 <= status_code < 400
         if not success:
             error = f"HTTP {status_code}"
-    except httpx.TimeoutException as exc:
+    except httpx.TimeoutException:
         error = f"HTTP request timed out after {timeout_seconds:g} seconds"
         logger.warning("HTTP API %s timed out after %ss: %s", api_id, timeout_seconds, requested_url)
     except httpx.ConnectError as exc:
@@ -232,8 +216,6 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
 
     duration_ms = int((time.perf_counter() - started) * 1000)
 
-    # Re-acquire the API row after the network wait.  This also makes the
-    # counter update robust if the session had to obtain a fresh connection.
     api_row = db.get(HttpApi, api_id)
     if api_row:
         api_row.total_calls += 1
@@ -243,7 +225,8 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
 
     mapped = []
     if success and apply_mappings and response_json is not None and channel and workspace_id and contact_id:
-        for mapping in _loads(api.response_mappings_json, []):
+        mappings = _loads(api_row.response_mappings_json if api_row else None, [])
+        for mapping in mappings:
             source_path = str(mapping.get("source_path") or "").strip()
             target_key = str(mapping.get("target_key") or "").strip()
             if not source_path or not target_key:
@@ -253,5 +236,11 @@ async def execute_http_api(db: Session, api: HttpApi, render: Callable[[str], st
                 mapped.append({"source_path": source_path, "target_key": target_key, "value": value})
 
     db.add(HttpApiCall(http_api_id=api_id, flow_run_id=flow_run_id, status_code=status_code, success=success, duration_ms=duration_ms, error_message=error, response_preview=response_text, created_at=datetime.utcnow()))
-    db.flush()
+
+    # Durable post-I/O checkpoint too. Previously this function returned after
+    # flush(), leaving a connection checked out while the flow moved on to
+    # diagnostics, Telegram sends, tracking or another awaited operation. Under
+    # concurrent slow/failed HTTP nodes that was enough to exhaust QueuePool.
+    db.commit()
+
     return {"success": success, "status_code": status_code, "method": method, "requested_url": requested_url, "final_url": final_url, "content_type": content_type, "duration_ms": duration_ms, "timeout_seconds": timeout_seconds, "error": error, "response": response_text, "response_json": response_json, "response_paths": flatten_paths(response_json) if response_json is not None else [], "mapped": mapped}
