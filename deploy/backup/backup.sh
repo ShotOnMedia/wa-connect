@@ -5,7 +5,7 @@ umask 077
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE_FILE="${BACKUP_COMPOSE_FILE:-docker-compose.prod.yml}"
+COMPOSE_FILE="${BACKUP_COMPOSE_FILE:-docker-compose.yml}"
 ENV_FILE="${BACKUP_ENV_FILE:-.env}"
 BACKUP_ROOT="${BACKUP_DIR:-/var/backups/wa-connect}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
@@ -15,11 +15,21 @@ DEST="$BACKUP_ROOT/$DAY/$TIMESTAMP"
 TMP="$DEST/.tmp"
 mkdir -p "$TMP"
 
-if [[ ! -f "$ENV_FILE" ]]; then echo "Missing $ENV_FILE" >&2; exit 1; fi
+[[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE" >&2; exit 1; }
+[[ -f "$COMPOSE_FILE" ]] || { echo "Missing $COMPOSE_FILE" >&2; exit 1; }
 
-# Docker Compose .env files are not shell scripts. Values such as
-# APP_NAME=WA Connect are valid for Compose but fail when sourced by bash.
-# Read only the keys this backup process needs, preserving spaces verbatim.
+# Read the resolved MariaDB environment from the running db container.
+# This works on dev where credentials are declared directly in Compose and
+# production where Compose resolves them from .env.
+DB_CONTAINER="$(docker compose -f "$COMPOSE_FILE" ps -q db)"
+[[ -n "$DB_CONTAINER" ]] || { echo "Database container is not running for $COMPOSE_FILE" >&2; exit 1; }
+
+container_env() {
+  local key="$1"
+  docker inspect "$DB_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    | sed -n "s/^${key}=//p" | head -n1
+}
+
 env_value() {
   local key="$1" line value
   line="$(grep -m1 -E "^[[:space:]]*${key}=" "$ENV_FILE" || true)"
@@ -34,17 +44,20 @@ env_value() {
   printf '%s' "$value"
 }
 
-DB_NAME="${MARIADB_DATABASE:-$(env_value MARIADB_DATABASE || printf 'wa_connect')}"
-DB_USER="${MARIADB_USER:-$(env_value MARIADB_USER || printf 'wa_connect')}"
-DB_PASS="${MARIADB_PASSWORD:-$(env_value MARIADB_PASSWORD || true)}"
-[[ -n "$DB_PASS" ]] || { echo "MARIADB_PASSWORD is required" >&2; exit 1; }
+DB_NAME="$(container_env MARIADB_DATABASE)"
+DB_USER="$(container_env MARIADB_USER)"
+DB_PASS="$(container_env MARIADB_PASSWORD)"
+DB_NAME="${DB_NAME:-wa_connect}"
+DB_USER="${DB_USER:-wa_connect}"
+[[ -n "$DB_PASS" ]] || { echo "Unable to determine MARIADB_PASSWORD from db container" >&2; exit 1; }
+
 MEDIA_PATH="${MEDIA_LOCAL_HOST_PATH:-$(env_value MEDIA_LOCAL_HOST_PATH || printf './storage/inbound-media')}"
 [[ "$MEDIA_PATH" = /* ]] || MEDIA_PATH="$ROOT_DIR/${MEDIA_PATH#./}"
 
 cleanup(){ rm -rf "$TMP"; }
 trap cleanup EXIT
 
-echo "[$(date -Is)] Backing up database $DB_NAME"
+echo "[$(date -Is)] Backing up database $DB_NAME using $COMPOSE_FILE"
 docker compose -f "$COMPOSE_FILE" exec -T -e MYSQL_PWD="$DB_PASS" db \
   mariadb-dump -u"$DB_USER" --single-transaction --quick --routines --triggers --events "$DB_NAME" \
   | gzip -9 > "$TMP/database.sql.gz"
@@ -59,7 +72,7 @@ else
 fi
 
 cp "$ENV_FILE" "$TMP/production.env"
-cp "$COMPOSE_FILE" "$TMP/docker-compose.prod.yml"
+cp "$COMPOSE_FILE" "$TMP/docker-compose.yml"
 
 GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 ALEMBIC_REVISION="$(docker compose -f "$COMPOSE_FILE" exec -T api alembic current 2>/dev/null | tail -n1 | tr -d '\r' || true)"
@@ -71,6 +84,7 @@ cat > "$TMP/manifest.json" <<JSON
   "created_at_utc": "$TIMESTAMP",
   "git_commit": "$GIT_COMMIT",
   "alembic_revision": "$ALEMBIC_REVISION",
+  "compose_file": "$COMPOSE_FILE",
   "database": "$DB_NAME",
   "database_archive_bytes": $DB_BYTES,
   "media_archive_bytes": $MEDIA_BYTES,
@@ -78,7 +92,7 @@ cat > "$TMP/manifest.json" <<JSON
 }
 JSON
 
-( cd "$TMP" && sha256sum database.sql.gz media.tar.gz production.env docker-compose.prod.yml manifest.json > SHA256SUMS )
+( cd "$TMP" && sha256sum database.sql.gz media.tar.gz production.env docker-compose.yml manifest.json > SHA256SUMS )
 
 if [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
   echo "[$(date -Is)] Encrypting sensitive environment backup"
@@ -86,7 +100,7 @@ if [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
     -pass env:BACKUP_ENCRYPTION_PASSPHRASE \
     -in "$TMP/production.env" -out "$TMP/production.env.enc"
   rm "$TMP/production.env"
-  ( cd "$TMP" && sha256sum database.sql.gz media.tar.gz production.env.enc docker-compose.prod.yml manifest.json > SHA256SUMS )
+  ( cd "$TMP" && sha256sum database.sql.gz media.tar.gz production.env.enc docker-compose.yml manifest.json > SHA256SUMS )
 elif [[ "${BACKUP_REQUIRE_ENCRYPTION:-true}" == "true" ]]; then
   echo "BACKUP_ENCRYPTION_PASSPHRASE is required when BACKUP_REQUIRE_ENCRYPTION=true" >&2
   exit 1
@@ -98,7 +112,6 @@ rmdir "$TMP"
 trap - EXIT
 
 ( cd "$DEST" && sha256sum -c SHA256SUMS )
-
 echo "[$(date -Is)] Backup verified: $DEST"
 
 if [[ "${BACKUP_S3_ENABLED:-false}" == "true" ]]; then
