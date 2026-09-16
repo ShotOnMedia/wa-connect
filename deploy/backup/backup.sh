@@ -18,16 +18,12 @@ mkdir -p "$TMP"
 [[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE" >&2; exit 1; }
 [[ -f "$COMPOSE_FILE" ]] || { echo "Missing $COMPOSE_FILE" >&2; exit 1; }
 
-# Read the resolved MariaDB environment from the running db container.
-# This works on dev where credentials are declared directly in Compose and
-# production where Compose resolves them from .env.
 DB_CONTAINER="$(docker compose -f "$COMPOSE_FILE" ps -q db)"
 [[ -n "$DB_CONTAINER" ]] || { echo "Database container is not running for $COMPOSE_FILE" >&2; exit 1; }
 
 container_env() {
   local key="$1"
-  docker inspect "$DB_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-    | sed -n "s/^${key}=//p" | head -n1
+  docker inspect "$DB_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n "s/^${key}=//p" | head -n1
 }
 
 env_value() {
@@ -54,7 +50,7 @@ DB_USER="${DB_USER:-wa_connect}"
 MEDIA_PATH="${MEDIA_LOCAL_HOST_PATH:-$(env_value MEDIA_LOCAL_HOST_PATH || printf './storage/inbound-media')}"
 [[ "$MEDIA_PATH" = /* ]] || MEDIA_PATH="$ROOT_DIR/${MEDIA_PATH#./}"
 
-cleanup(){ rm -rf "$TMP"; }
+cleanup(){ rm -rf "$TMP"; rmdir "$DEST" 2>/dev/null || true; }
 trap cleanup EXIT
 
 echo "[$(date -Is)] Backing up database $DB_NAME using $COMPOSE_FILE"
@@ -66,9 +62,11 @@ gzip -t "$TMP/database.sql.gz"
 if [[ -d "$MEDIA_PATH" ]]; then
   echo "[$(date -Is)] Archiving media $MEDIA_PATH"
   tar -C "$MEDIA_PATH" -czf "$TMP/media.tar.gz" .
+  MEDIA_FILES="$(find "$MEDIA_PATH" -type f | wc -l | tr -d ' ')"
 else
   echo "[$(date -Is)] Media path not found; creating empty archive"
   tar -czf "$TMP/media.tar.gz" --files-from /dev/null
+  MEDIA_FILES=0
 fi
 
 cp "$ENV_FILE" "$TMP/production.env"
@@ -78,7 +76,6 @@ GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 ALEMBIC_REVISION="$(docker compose -f "$COMPOSE_FILE" exec -T api alembic current 2>/dev/null | tail -n1 | tr -d '\r' || true)"
 DB_BYTES="$(stat -c %s "$TMP/database.sql.gz")"
 MEDIA_BYTES="$(stat -c %s "$TMP/media.tar.gz")"
-MEDIA_FILES="$(find "$MEDIA_PATH" -type f 2>/dev/null | wc -l | tr -d ' ')"
 cat > "$TMP/manifest.json" <<JSON
 {
   "created_at_utc": "$TIMESTAMP",
@@ -96,9 +93,7 @@ JSON
 
 if [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]]; then
   echo "[$(date -Is)] Encrypting sensitive environment backup"
-  openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-    -pass env:BACKUP_ENCRYPTION_PASSPHRASE \
-    -in "$TMP/production.env" -out "$TMP/production.env.enc"
+  openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:BACKUP_ENCRYPTION_PASSPHRASE -in "$TMP/production.env" -out "$TMP/production.env.enc"
   rm "$TMP/production.env"
   ( cd "$TMP" && sha256sum database.sql.gz media.tar.gz production.env.enc docker-compose.yml manifest.json > SHA256SUMS )
 elif [[ "${BACKUP_REQUIRE_ENCRYPTION:-true}" == "true" ]]; then
@@ -106,7 +101,6 @@ elif [[ "${BACKUP_REQUIRE_ENCRYPTION:-true}" == "true" ]]; then
   exit 1
 fi
 
-mkdir -p "$DEST"
 find "$TMP" -mindepth 1 -maxdepth 1 -exec mv {} "$DEST/" \;
 rmdir "$TMP"
 trap - EXIT
@@ -119,9 +113,7 @@ if [[ "${BACKUP_S3_ENABLED:-false}" == "true" ]]; then
   : "${BACKUP_S3_BUCKET:?BACKUP_S3_BUCKET required}"
   S3_ARGS=()
   [[ -n "${BACKUP_S3_ENDPOINT:-}" ]] && S3_ARGS+=(--endpoint-url "$BACKUP_S3_ENDPOINT")
-  AWS_ACCESS_KEY_ID="${BACKUP_S3_ACCESS_KEY:-${AWS_ACCESS_KEY_ID:-}}" \
-  AWS_SECRET_ACCESS_KEY="${BACKUP_S3_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-}}" \
-  AWS_DEFAULT_REGION="${BACKUP_S3_REGION:-auto}" \
+  AWS_ACCESS_KEY_ID="${BACKUP_S3_ACCESS_KEY:-${AWS_ACCESS_KEY_ID:-}}" AWS_SECRET_ACCESS_KEY="${BACKUP_S3_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-}}" AWS_DEFAULT_REGION="${BACKUP_S3_REGION:-auto}" \
     aws "${S3_ARGS[@]}" s3 cp "$DEST" "s3://${BACKUP_S3_BUCKET}/${BACKUP_S3_PREFIX:-wa-connect}/$DAY/$TIMESTAMP/" --recursive --only-show-errors
   echo "[$(date -Is)] Off-server upload complete"
 fi
