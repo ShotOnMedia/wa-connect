@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 BACKUP_DIR="${1:?Usage: restore.sh /path/to/backup --confirm}"
 CONFIRM="${2:-}"
@@ -12,6 +13,8 @@ ENV_FILE="${BACKUP_ENV_FILE:-.env}"
 
 [[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE" >&2; exit 1; }
 [[ -f "$COMPOSE_FILE" ]] || { echo "Missing $COMPOSE_FILE" >&2; exit 1; }
+[[ -d "$BACKUP_DIR" ]] || { echo "Backup directory not found: $BACKUP_DIR" >&2; exit 1; }
+BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd)"
 
 "$ROOT_DIR/deploy/backup/verify.sh" "$BACKUP_DIR"
 
@@ -40,6 +43,17 @@ env_value() {
   printf '%s' "$value"
 }
 
+manifest_value() {
+  local key="$1"
+  python3 - "$BACKUP_DIR/manifest.json" "$key" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    data = json.load(fh)
+value = data.get(sys.argv[2], "")
+print(value if value is not None else "")
+PY
+}
+
 DB_NAME="$(container_env MARIADB_DATABASE)"
 DB_USER="$(container_env MARIADB_USER)"
 DB_PASS="$(container_env MARIADB_PASSWORD)"
@@ -49,12 +63,27 @@ DB_USER="${DB_USER:-wa_connect}"
 [[ -n "$DB_PASS" ]] || { echo "Unable to determine MARIADB_PASSWORD from db container" >&2; exit 1; }
 [[ -n "$DB_ROOT_PASS" ]] || { echo "Unable to determine MARIADB_ROOT_PASSWORD from db container" >&2; exit 1; }
 
+BACKUP_DB="$(manifest_value database)"
+BACKUP_COMPOSE="$(manifest_value compose_file)"
+[[ -n "$BACKUP_DB" ]] || { echo "Backup manifest does not identify a database" >&2; exit 1; }
+[[ "$BACKUP_DB" == "$DB_NAME" ]] || {
+  echo "Refusing restore: backup database '$BACKUP_DB' does not match target '$DB_NAME'." >&2
+  exit 1
+}
+
 MEDIA_PATH="${MEDIA_LOCAL_HOST_PATH:-$(env_value MEDIA_LOCAL_HOST_PATH || printf './storage/inbound-media')}"
 [[ "$MEDIA_PATH" = /* ]] || MEDIA_PATH="$ROOT_DIR/${MEDIA_PATH#./}"
 
-printf 'This will REPLACE database "%s" and media at "%s" using "%s". Type RESTORE: ' "$DB_NAME" "$MEDIA_PATH" "$COMPOSE_FILE"
+printf '\nRestore plan:\n'
+printf '  Backup:         %s\n' "$BACKUP_DIR"
+printf '  Backup DB:      %s\n' "$BACKUP_DB"
+printf '  Backup Compose: %s\n' "${BACKUP_COMPOSE:-unknown}"
+printf '  Target DB:      %s\n' "$DB_NAME"
+printf '  Target Compose: %s\n' "$COMPOSE_FILE"
+printf '  Media path:     %s\n\n' "$MEDIA_PATH"
+printf 'This will REPLACE the target database and media. Type RESTORE %s: ' "$DB_NAME"
 read -r answer
-[[ "$answer" == "RESTORE" ]] || { echo "Restore cancelled."; exit 2; }
+[[ "$answer" == "RESTORE $DB_NAME" ]] || { echo "Restore cancelled."; exit 2; }
 
 echo "Stopping API and worker to prevent writes..."
 docker compose -f "$COMPOSE_FILE" stop api delay-worker
@@ -81,4 +110,10 @@ docker compose -f "$COMPOSE_FILE" start api delay-worker
 trap - EXIT
 
 echo "Restore completed. Verify /health and application data before reopening traffic."
-echo "production.env(.enc) is intentionally NOT restored automatically; compare it manually."
+if [[ -f "$BACKUP_DIR/production.env.enc" ]]; then
+  echo "Encrypted environment snapshot is available at $BACKUP_DIR/production.env.enc"
+  echo "It is intentionally NOT restored automatically. To inspect it safely:"
+  echo "  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_ENCRYPTION_PASSPHRASE -in '$BACKUP_DIR/production.env.enc'"
+elif [[ -f "$BACKUP_DIR/production.env" ]]; then
+  echo "WARNING: unencrypted environment snapshot is present at $BACKUP_DIR/production.env" >&2
+fi
