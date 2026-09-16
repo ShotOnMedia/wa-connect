@@ -16,15 +16,29 @@ TMP="$DEST/.tmp"
 mkdir -p "$TMP"
 
 if [[ ! -f "$ENV_FILE" ]]; then echo "Missing $ENV_FILE" >&2; exit 1; fi
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
 
-DB_NAME="${MARIADB_DATABASE:-wa_connect}"
-DB_USER="${MARIADB_USER:-wa_connect}"
-DB_PASS="${MARIADB_PASSWORD:?MARIADB_PASSWORD is required}"
-MEDIA_PATH="${MEDIA_LOCAL_HOST_PATH:-./storage/inbound-media}"
+# Docker Compose .env files are not shell scripts. Values such as
+# APP_NAME=WA Connect are valid for Compose but fail when sourced by bash.
+# Read only the keys this backup process needs, preserving spaces verbatim.
+env_value() {
+  local key="$1" line value
+  line="$(grep -m1 -E "^[[:space:]]*${key}=" "$ENV_FILE" || true)"
+  [[ -n "$line" ]] || return 1
+  value="${line#*=}"
+  value="${value%$'\r'}"
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
+DB_NAME="${MARIADB_DATABASE:-$(env_value MARIADB_DATABASE || printf 'wa_connect')}"
+DB_USER="${MARIADB_USER:-$(env_value MARIADB_USER || printf 'wa_connect')}"
+DB_PASS="${MARIADB_PASSWORD:-$(env_value MARIADB_PASSWORD || true)}"
+[[ -n "$DB_PASS" ]] || { echo "MARIADB_PASSWORD is required" >&2; exit 1; }
+MEDIA_PATH="${MEDIA_LOCAL_HOST_PATH:-$(env_value MEDIA_LOCAL_HOST_PATH || printf './storage/inbound-media')}"
 [[ "$MEDIA_PATH" = /* ]] || MEDIA_PATH="$ROOT_DIR/${MEDIA_PATH#./}"
 
 cleanup(){ rm -rf "$TMP"; }
