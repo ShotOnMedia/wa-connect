@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.core.database import get_db
 from app.core.security import require_user
 from app.models import Contact, ContactFieldValue, Conversation, Message, User, UserRole
-from app.telegram_models import TelegramContact, TelegramContactFieldValue, TelegramConversation
+from app.telegram_models import TelegramContact, TelegramContactFieldValue, TelegramConversation, TelegramMessage
 
 router = APIRouter(prefix="/live-chat-search", tags=["Live Chat"])
 
@@ -32,17 +32,16 @@ def _whatsapp_out(db: Session, conversation: Conversation):
     }
 
 
-def _telegram_out(conversation: TelegramConversation):
-    last = conversation.messages[-1] if conversation.messages else None
+def _telegram_out(conversation: TelegramConversation, last_body=None, last_type=None, last_direction=None):
     return {
         "id": conversation.id,
         "chat_id": conversation.chat_id,
         "status": conversation.status,
         "assigned_user_id": conversation.assigned_user_id,
         "last_message_at": conversation.last_message_at,
-        "last_message_body": last.body if last else None,
-        "last_message_type": last.message_type if last else None,
-        "last_message_direction": last.direction if last else None,
+        "last_message_body": last_body,
+        "last_message_type": last_type,
+        "last_message_direction": last_direction,
         "contact": {
             "id": conversation.contact.id,
             "telegram_user_id": conversation.contact.telegram_user_id,
@@ -80,10 +79,13 @@ def search_live_chat(
 
     if channel == "telegram":
         custom_match = exists(select(TelegramContactFieldValue.id).where(TelegramContactFieldValue.contact_id == TelegramContact.id, TelegramContactFieldValue.value_text.ilike(term)))
+        def latest(column):
+            return select(column).where(TelegramMessage.conversation_id == TelegramConversation.id).order_by(TelegramMessage.created_at.desc(), TelegramMessage.id.desc()).limit(1).correlate(TelegramConversation).scalar_subquery()
+        last_body, last_type, last_direction = latest(TelegramMessage.body), latest(TelegramMessage.message_type), latest(TelegramMessage.direction)
         stmt = (
-            select(TelegramConversation)
+            select(TelegramConversation, last_body, last_type, last_direction)
             .join(TelegramContact, TelegramContact.id == TelegramConversation.contact_id)
-            .options(joinedload(TelegramConversation.contact), joinedload(TelegramConversation.bot), selectinload(TelegramConversation.messages))
+            .options(joinedload(TelegramConversation.contact), joinedload(TelegramConversation.bot))
             .where(or_(
                 TelegramContact.first_name.ilike(term), TelegramContact.last_name.ilike(term), TelegramContact.username.ilike(term),
                 cast(TelegramContact.telegram_user_id, String).ilike(term), cast(TelegramConversation.chat_id, String).ilike(term),
@@ -93,6 +95,6 @@ def search_live_chat(
         )
         if _is_agent(current):
             stmt = stmt.where(TelegramConversation.assigned_user_id == current.id)
-        return [_telegram_out(c) for c in db.scalars(stmt).unique().all()]
+        return [_telegram_out(c, body, msg_type, direction) for c, body, msg_type, direction in db.execute(stmt).unique().all()]
 
     return []
