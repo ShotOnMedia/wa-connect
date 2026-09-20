@@ -58,11 +58,18 @@ def contacts(q:str|None=None,db:Session=Depends(get_db),user:User=Depends(requir
     if _is_agent(user):stmt=stmt.join(TelegramConversation,TelegramConversation.contact_id==TelegramContact.id).where(TelegramConversation.assigned_user_id==user.id).distinct()
     if q:
         term=f"%{q.strip()}%";stmt=stmt.where(or_(TelegramContact.first_name.ilike(term),TelegramContact.last_name.ilike(term),TelegramContact.username.ilike(term)))
+    contacts=db.scalars(stmt).all()
+    if not contacts:return []
+    contact_ids=[c.id for c in contacts]
+    conv_stmt=select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id.in_(contact_ids)).order_by(TelegramConversation.contact_id,TelegramConversation.last_message_at.desc())
+    if _is_agent(user):conv_stmt=conv_stmt.where(TelegramConversation.assigned_user_id==user.id)
+    conversations_by_contact={}
+    for conversation in db.scalars(conv_stmt).all():
+        conversations_by_contact.setdefault(conversation.contact_id,[]).append(conversation)
     result=[]
-    for c in db.scalars(stmt).all():
-        conv_stmt=select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id==c.id).order_by(TelegramConversation.last_message_at.desc())
-        if _is_agent(user):conv_stmt=conv_stmt.where(TelegramConversation.assigned_user_id==user.id)
-        convs=db.scalars(conv_stmt).all();result.append({**_contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"assigned_user_id":x.assigned_user_id,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]})
+    for c in contacts:
+        convs=conversations_by_contact.get(c.id,[])
+        result.append({**_contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"assigned_user_id":x.assigned_user_id,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]})
     return result
 
 @router.get("/contacts/{contact_id}")
