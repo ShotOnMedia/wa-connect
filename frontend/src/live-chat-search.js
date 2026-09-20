@@ -13,24 +13,13 @@ function whatsappHost(){
   if(!list)return null
   return list.querySelector('.filters')||list.querySelector('.assignment-filters')||list.querySelector('header')
 }
-function telegramHost(){
-  const list=document.querySelector('.tg-list')
-  if(!list)return null
-  return list.querySelector('.tg-account-filter')||list.querySelector('header')
-}
-function rows(channel){return channel==='telegram'?[...document.querySelectorAll('.tg-list > .row')]:[...document.querySelectorAll('.conversation-list > .conversation-row')]}
+function rows(channel){return [...document.querySelectorAll('.conversation-list > .conversation-row')]}
 function normalize(v){return String(v??'').trim()}
-function rowIdentity(row,channel){
-  if(channel==='telegram')return normalize(row.querySelector('.copy b')?.textContent)
-  return normalize(row.querySelector('.row-top strong')?.textContent)
-}
-function resultIdentity(item,channel){
-  if(channel==='telegram')return normalize(item.contact?.name||item.contact?.username||item.chat_id)
-  return normalize(item.contact?.name||item.contact?.wa_id)
-}
+function rowIdentity(row,channel){return normalize(row.querySelector('.row-top strong')?.textContent)}
+function resultIdentity(item,channel){return normalize(item.contact?.name||item.contact?.wa_id)}
 function restore(channel){rows(channel).forEach(r=>r.style.removeProperty('display'));document.querySelector(`.live-chat-search-empty[data-channel="${channel}"]`)?.remove()}
 function apply(channel,results){
-  const list=channel==='telegram'?document.querySelector('.tg-list'):document.querySelector('.conversation-list')
+  const list=document.querySelector('.conversation-list')
   if(!list)return
   const ids=new Set(results.map(r=>String(r.id)))
   const names=new Set(results.map(r=>resultIdentity(r,channel)))
@@ -48,7 +37,7 @@ async function run(channel,input){
   try{busy=true;input.classList.add('searching');apply(channel,await search(channel,q))}catch(e){console.warn('[live-chat-search]',e)}finally{busy=false;input.classList.remove('searching')}
 }
 function mount(channel,host){
-  const list=channel==='telegram'?document.querySelector('.tg-list'):document.querySelector('.conversation-list')
+  const list=document.querySelector('.conversation-list')
   if(!list||list.querySelector(`.live-chat-search[data-channel="${channel}"]`))return
   const wrap=document.createElement('div');wrap.className='live-chat-search';wrap.dataset.channel=channel
   wrap.innerHTML='<span class="live-chat-search-icon">⌕</span><input type="search" autocomplete="off" placeholder="Search conversations…" aria-label="Search conversations"><button type="button" title="Clear search">×</button>'
@@ -60,8 +49,7 @@ function mount(channel,host){
 }
 function ensure(){
   const wh=whatsappHost();if(wh)mount('whatsapp',wh)
-  const tg=telegramHost();if(tg)mount('telegram',tg)
-  for(const channel of ['whatsapp','telegram']){if(!state[channel])continue;const input=document.querySelector(`.live-chat-search[data-channel="${channel}"] input`);if(input&&!busy)run(channel,input)}
+  const channel='whatsapp';if(state[channel]){const input=document.querySelector(`.live-chat-search[data-channel="${channel}"] input`);if(input&&!busy)run(channel,input)}
 }
 export function installLiveChatSearch(){
   let queued=false
