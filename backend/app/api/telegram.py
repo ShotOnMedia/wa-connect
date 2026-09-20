@@ -101,9 +101,16 @@ def telegram_contacts(q:str|None=None,db:Session=Depends(get_db)):
     stmt=select(TelegramContact).order_by(TelegramContact.updated_at.desc())
     if q:
         term=f"%{q.strip()}%";stmt=stmt.where(or_(TelegramContact.first_name.ilike(term),TelegramContact.last_name.ilike(term),TelegramContact.username.ilike(term)))
-    contacts=db.scalars(stmt).all();result=[]
+    contacts=db.scalars(stmt).all()
+    if not contacts:return []
+    contact_ids=[c.id for c in contacts]
+    conversations_by_contact={}
+    conv_stmt=select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id.in_(contact_ids)).order_by(TelegramConversation.contact_id,TelegramConversation.last_message_at.desc())
+    for conversation in db.scalars(conv_stmt).all():
+        conversations_by_contact.setdefault(conversation.contact_id,[]).append(conversation)
+    result=[]
     for c in contacts:
-        convs=db.scalars(select(TelegramConversation).options(joinedload(TelegramConversation.bot)).where(TelegramConversation.contact_id==c.id).order_by(TelegramConversation.last_message_at.desc())).all()
+        convs=conversations_by_contact.get(c.id,[])
         result.append({**contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]})
     return result
 @router.get("/contacts/{contact_id}",dependencies=[Depends(require_user)])
