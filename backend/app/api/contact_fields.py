@@ -152,7 +152,7 @@ def get_telegram_contact_custom_fields(contact_id:int,db:Session=Depends(get_db)
     contact=db.get(TelegramContact,contact_id)
     if not contact:raise HTTPException(status_code=404,detail="Telegram contact not found")
     _assert_tg_contact_access(db,contact_id,user)
-    ensure_system_fields(db,contact.workspace_id);sync_telegram_system_fields(db,contact);db.commit()
+    ensure_system_fields(db,contact.workspace_id)
     rows=db.execute(select(ContactFieldDefinition,TelegramContactFieldValue.value_text).outerjoin(TelegramContactFieldValue,(TelegramContactFieldValue.field_id==ContactFieldDefinition.id)&(TelegramContactFieldValue.contact_id==contact_id)).where(ContactFieldDefinition.workspace_id==contact.workspace_id,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order.asc(),ContactFieldDefinition.label.asc())).all()
     return [_field_payload(field,value,user) for field,value in rows]
 
