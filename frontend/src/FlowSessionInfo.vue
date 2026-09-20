@@ -6,9 +6,9 @@ const session=ref(null),loading=ref(false)
 let timer=null
 function pretty(value){return String(value||'').replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}
 function time(value){if(!value)return '—';return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value))}
-async function load(){if(!props.conversationId)return;loading.value=true;try{session.value=props.channel==='telegram'?await api.telegramFlowSession(props.conversationId):await api.flowSession(props.conversationId)}catch(_){session.value=null}finally{loading.value=false}}
+async function load(){if(!props.conversationId||document.hidden)return;loading.value=true;try{session.value=props.channel==='telegram'?await api.telegramFlowSession(props.conversationId):await api.flowSession(props.conversationId)}catch(_){session.value=null}finally{loading.value=false}}
 watch(()=>props.conversationId,async()=>{await load()},{immediate:true})
-timer=setInterval(load,3000)
+timer=setInterval(load,10000)
 onBeforeUnmount(()=>timer&&clearInterval(timer))
 defineExpose({refresh:load})
 </script>
