@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import or_, select, update
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from app.core.database import get_db
 from app.core.security import require_user
@@ -136,10 +136,15 @@ async def send(conversation_id:int,request:SendIn,db:Session=Depends(get_db),use
 def flow_session(conversation_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
     from app.flow_channel_models import TelegramFlowSession
     from app.flow_models import Flow,FlowNode
-    _assert_conversation(db,conversation_id,user);session=db.scalar(select(TelegramFlowSession).where(TelegramFlowSession.conversation_id==conversation_id))
+    node=aliased(FlowNode)
+    stmt=select(TelegramConversation,TelegramFlowSession,Flow.name,node.title,node.node_type).outerjoin(TelegramFlowSession,TelegramFlowSession.conversation_id==TelegramConversation.id).outerjoin(Flow,Flow.id==TelegramFlowSession.flow_id).outerjoin(node,node.id==TelegramFlowSession.current_node_id).where(TelegramConversation.id==conversation_id)
+    row=db.execute(stmt).first()
+    if not row:raise HTTPException(status_code=404,detail="Telegram conversation not found")
+    conversation,session,flow_name,node_title,node_type_value=row
+    if _is_agent(user) and conversation.assigned_user_id!=user.id:raise HTTPException(status_code=403,detail="This Telegram conversation is not assigned to you")
     if not session:return None
-    flow=db.get(Flow,session.flow_id);node=db.get(FlowNode,session.current_node_id) if session.current_node_id else None;node_type=(node.node_type.value if hasattr(node.node_type,'value') else str(node.node_type)) if node else None
-    return {"id":session.id,"flow_id":session.flow_id,"flow_name":flow.name if flow else f"Flow {session.flow_id}","current_node_id":session.current_node_id,"current_node_title":node.title if node else None,"current_node_type":node_type,"status":session.status,"waiting_for":session.waiting_for,"started_at":session.started_at,"updated_at":session.updated_at,"ended_at":session.ended_at}
+    node_type=node_type_value.value if hasattr(node_type_value,'value') else (str(node_type_value) if node_type_value is not None else None)
+    return {"id":session.id,"flow_id":session.flow_id,"flow_name":flow_name or f"Flow {session.flow_id}","current_node_id":session.current_node_id,"current_node_title":node_title,"current_node_type":node_type,"status":session.status,"waiting_for":session.waiting_for,"started_at":session.started_at,"updated_at":session.updated_at,"ended_at":session.ended_at}
 
 @router.post("/conversations/{conversation_id}/flow-session/reset")
 def reset_flow(conversation_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
