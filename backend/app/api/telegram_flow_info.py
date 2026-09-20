@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.database import get_db
 from app.core.security import require_user
@@ -13,28 +13,28 @@ router = APIRouter(prefix="/telegram", tags=["Telegram"])
 
 @router.get("/conversations/{conversation_id}/flow-session", dependencies=[Depends(require_user)])
 def telegram_flow_session(conversation_id: int, db: Session = Depends(get_db)):
-    conversation = db.get(TelegramConversation, conversation_id)
-    if not conversation:
+    node_alias = aliased(FlowNode)
+    row = db.execute(
+        select(TelegramConversation.id, TelegramFlowSession, Flow.name, node_alias.title, node_alias.node_type)
+        .outerjoin(TelegramFlowSession, TelegramFlowSession.conversation_id == TelegramConversation.id)
+        .outerjoin(Flow, Flow.id == TelegramFlowSession.flow_id)
+        .outerjoin(node_alias, node_alias.id == TelegramFlowSession.current_node_id)
+        .where(TelegramConversation.id == conversation_id)
+    ).first()
+    if not row:
         raise HTTPException(status_code=404, detail="Telegram conversation not found")
 
-    session = db.scalar(
-        select(TelegramFlowSession).where(TelegramFlowSession.conversation_id == conversation_id)
-    )
+    _, session, flow_name, node_title, node_type_value = row
     if not session:
         return None
 
-    flow = db.get(Flow, session.flow_id)
-    node = db.get(FlowNode, session.current_node_id) if session.current_node_id else None
-    node_type = None
-    if node:
-        node_type = node.node_type.value if hasattr(node.node_type, "value") else str(node.node_type)
-
+    node_type = node_type_value.value if hasattr(node_type_value, "value") else (str(node_type_value) if node_type_value is not None else None)
     return {
         "id": session.id,
         "flow_id": session.flow_id,
-        "flow_name": flow.name if flow else f"Flow {session.flow_id}",
+        "flow_name": flow_name or f"Flow {session.flow_id}",
         "current_node_id": session.current_node_id,
-        "current_node_title": node.title if node else None,
+        "current_node_title": node_title,
         "current_node_type": node_type,
         "status": session.status,
         "waiting_for": session.waiting_for,
