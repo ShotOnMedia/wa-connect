@@ -83,8 +83,8 @@ def contact(contact_id:int,db:Session=Depends(get_db),user:User=Depends(require_
     return {**_contact_out(c),"conversation_count":len(convs),"last_message_at":convs[0].last_message_at if convs else None,"conversations":[{"id":x.id,"chat_id":x.chat_id,"status":x.status,"assigned_user_id":x.assigned_user_id,"last_message_at":x.last_message_at,"bot":{"id":x.bot.id,"username":x.bot.username,"first_name":x.bot.first_name}} for x in convs]}
 
 @router.get("/conversations/{conversation_id}/messages")
-def messages(conversation_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _assert_conversation(db,conversation_id,user);return [_message_out(m) for m in db.scalars(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation_id).order_by(TelegramMessage.created_at.asc())).all()]
+def messages(conversation_id:int,after_id:int|None=None,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _assert_conversation(db,conversation_id,user);stmt=select(TelegramMessage).where(TelegramMessage.conversation_id==conversation_id);stmt=stmt.where(TelegramMessage.id>after_id) if after_id is not None else stmt;return [_message_out(m) for m in db.scalars(stmt.order_by(TelegramMessage.created_at.asc(),TelegramMessage.id.asc())).all()]
 
 @router.get("/messages/{message_id}/media")
 async def media(message_id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
