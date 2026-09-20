@@ -50,10 +50,14 @@ def _media_meta(m):
     if not stored_url and not file_id:return None
     return {"file_id":file_id,"file_name":item.get("file_name"),"mime_type":item.get("mime_type"),"file_size":item.get("file_size"),"width":item.get("width"),"height":item.get("height"),"duration":item.get("duration"),"emoji":item.get("emoji"),"stored":bool(stored_key),"stored_url":stored_url,"stored_key":stored_key,"stored_provider":stored_provider,"url":f"/telegram/messages/{m.id}/media"}
 def message_out(m): return {"id":m.id,"telegram_message_id":m.telegram_message_id,"direction":m.direction,"message_type":m.message_type,"body":m.body,"media":_media_meta(m),"status":m.status,"telegram_timestamp":m.telegram_timestamp,"created_at":m.created_at}
-def conversation_out(c):
-    last=c.messages[-1] if c.messages else None
+def conversation_out(c,last_body=None,last_type=None,last_direction=None):
     unread=bool(c.last_message_at and (not c.last_read_at or c.last_read_at<c.last_message_at))
-    return {"id":c.id,"chat_id":c.chat_id,"chat_type":c.chat_type,"status":c.status,"assigned_user_id":c.assigned_user_id,"last_message_at":c.last_message_at,"last_read_at":c.last_read_at,"unread_count":1 if unread else 0,"last_message_body":last.body if last else None,"last_message_type":last.message_type if last else None,"last_message_direction":last.direction if last else None,"contact":contact_out(c.contact),"bot":{"id":c.bot.id,"bot_id":c.bot.bot_id,"username":c.bot.username,"first_name":c.bot.first_name}}
+    return {"id":c.id,"chat_id":c.chat_id,"chat_type":c.chat_type,"status":c.status,"assigned_user_id":c.assigned_user_id,"last_message_at":c.last_message_at,"last_read_at":c.last_read_at,"unread_count":1 if unread else 0,"last_message_body":last_body,"last_message_type":last_type,"last_message_direction":last_direction,"contact":contact_out(c.contact),"bot":{"id":c.bot.id,"bot_id":c.bot.bot_id,"username":c.bot.username,"first_name":c.bot.first_name}}
+
+def _latest_message_columns():
+    def latest(column):
+        return select(column).where(TelegramMessage.conversation_id==TelegramConversation.id).order_by(TelegramMessage.created_at.desc(),TelegramMessage.id.desc()).limit(1).correlate(TelegramConversation).scalar_subquery()
+    return latest(TelegramMessage.body),latest(TelegramMessage.message_type),latest(TelegramMessage.direction)
 
 @router.post("/verify",dependencies=[Depends(require_admin)])
 async def verify_telegram_bot(request:TelegramVerifyIn):
@@ -111,7 +115,7 @@ def telegram_contact(contact_id:int,db:Session=Depends(get_db)):
 
 @router.get("/conversations",dependencies=[Depends(require_user)])
 def telegram_conversations(db:Session=Depends(get_db)):
-    rows=db.scalars(select(TelegramConversation).options(joinedload(TelegramConversation.contact),joinedload(TelegramConversation.bot),joinedload(TelegramConversation.messages)).order_by(TelegramConversation.last_message_at.desc())).unique().all();return [conversation_out(c) for c in rows]
+    last_body,last_type,last_direction=_latest_message_columns();stmt=select(TelegramConversation,last_body,last_type,last_direction).options(joinedload(TelegramConversation.contact),joinedload(TelegramConversation.bot)).order_by(TelegramConversation.last_message_at.desc());return [conversation_out(c,body,msg_type,direction) for c,body,msg_type,direction in db.execute(stmt).all()]
 @router.get("/conversations/{conversation_id}/messages",dependencies=[Depends(require_user)])
 def telegram_messages(conversation_id:int,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id));
