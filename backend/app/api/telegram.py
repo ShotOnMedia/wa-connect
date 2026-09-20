@@ -124,10 +124,10 @@ def telegram_contact(contact_id:int,db:Session=Depends(get_db)):
 def telegram_conversations(db:Session=Depends(get_db)):
     last_body,last_type,last_direction=_latest_message_columns();stmt=select(TelegramConversation,last_body,last_type,last_direction).options(joinedload(TelegramConversation.contact),joinedload(TelegramConversation.bot)).order_by(TelegramConversation.last_message_at.desc());return [conversation_out(c,body,msg_type,direction) for c,body,msg_type,direction in db.execute(stmt).all()]
 @router.get("/conversations/{conversation_id}/messages",dependencies=[Depends(require_user)])
-def telegram_messages(conversation_id:int,db:Session=Depends(get_db)):
+def telegram_messages(conversation_id:int,after_id:int|None=None,db:Session=Depends(get_db)):
     c=db.scalar(select(TelegramConversation).where(TelegramConversation.id==conversation_id));
     if not c:raise HTTPException(status_code=404,detail="Telegram conversation not found")
-    return [message_out(m) for m in db.scalars(select(TelegramMessage).where(TelegramMessage.conversation_id==conversation_id).order_by(TelegramMessage.created_at.asc())).all()]
+    stmt=select(TelegramMessage).where(TelegramMessage.conversation_id==conversation_id);stmt=stmt.where(TelegramMessage.id>after_id) if after_id is not None else stmt;return [message_out(m) for m in db.scalars(stmt.order_by(TelegramMessage.created_at.asc(),TelegramMessage.id.asc())).all()]
 @router.get("/messages/{message_id}/media",dependencies=[Depends(require_user)])
 async def telegram_message_media(message_id:int,db:Session=Depends(get_db)):
     m=db.scalar(select(TelegramMessage).options(joinedload(TelegramMessage.conversation).joinedload(TelegramConversation.bot)).where(TelegramMessage.id==message_id))
