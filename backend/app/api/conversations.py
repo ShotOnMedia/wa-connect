@@ -130,6 +130,7 @@ def list_conversations(
             FlowNode.title,
         )
         .options(selectinload(Conversation.contact))
+        .select_from(Conversation)
         .outerjoin(last_message, last_message.id == latest_message_id)
         .outerjoin(assigned_user, assigned_user.id == Conversation.assigned_user_id)
         .outerjoin(FlowSession, FlowSession.conversation_id == Conversation.id)
