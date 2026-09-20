@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import String, cast, exists, or_, select
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.security import require_user
@@ -18,8 +18,7 @@ def _like(value: str):
     return f"%{value.strip()}%"
 
 
-def _whatsapp_out(db: Session, conversation: Conversation):
-    last = db.scalar(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.desc()).limit(1))
+def _whatsapp_out(db: Session, conversation: Conversation, last=None):
     return {
         "id": conversation.id,
         "phone_number_id": conversation.phone_number_id,
@@ -66,16 +65,18 @@ def search_live_chat(
 
     if channel == "whatsapp":
         custom_match = exists(select(ContactFieldValue.id).where(ContactFieldValue.contact_id == Contact.id, ContactFieldValue.value_text.ilike(term)))
+        latest_message_id = select(Message.id).where(Message.conversation_id == Conversation.id).order_by(Message.created_at.desc(), Message.id.desc()).limit(1).correlate(Conversation).scalar_subquery()
         stmt = (
-            select(Conversation)
+            select(Conversation, Message)
             .join(Contact, Contact.id == Conversation.contact_id)
+            .outerjoin(Message, Message.id == latest_message_id)
             .options(joinedload(Conversation.contact))
             .where(or_(Contact.name.ilike(term), Contact.wa_id.ilike(term), cast(Contact.id, String).ilike(term), cast(Conversation.id, String).ilike(term), custom_match))
             .order_by(Conversation.last_message_at.desc())
         )
         if _is_agent(current):
             stmt = stmt.where(Conversation.assigned_user_id == current.id)
-        return [_whatsapp_out(db, c) for c in db.scalars(stmt).unique().all()]
+        return [_whatsapp_out(db, conversation, last) for conversation, last in db.execute(stmt).unique().all()]
 
     if channel == "telegram":
         custom_match = exists(select(TelegramContactFieldValue.id).where(TelegramContactFieldValue.contact_id == TelegramContact.id, TelegramContactFieldValue.value_text.ilike(term)))
