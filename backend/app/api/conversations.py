@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -44,12 +44,48 @@ def _flow_session_out(db: Session, conversation_id: int) -> FlowSessionOut | Non
     )
 
 
+def _flow_session_from_row(session, flow_name, node_title):
+    if not session:
+        return None
+    return FlowSessionOut(
+        id=session.id,
+        flow_id=session.flow_id,
+        flow_name=flow_name or f"Flow {session.flow_id}",
+        current_node_id=session.current_node_id,
+        current_node_title=node_title,
+        status=session.status.value,
+        waiting_for=session.waiting_for,
+        started_at=session.started_at,
+        updated_at=session.updated_at,
+        ended_at=session.ended_at,
+    )
+
+
+def _conversation_from_row(conversation, unread_count, last_message_body, last_message_direction, assigned_user, flow_session, flow_name, node_title):
+    return ConversationOut(
+        id=conversation.id,
+        phone_number_id=conversation.phone_number_id,
+        status=conversation.status,
+        last_message_at=conversation.last_message_at,
+        last_customer_message_at=conversation.last_customer_message_at,
+        service_window_expires_at=conversation.service_window_expires_at,
+        service_window_open=service_window_open(conversation),
+        contact=conversation.contact,
+        unread_count=int(unread_count or 0),
+        last_message_body=last_message_body,
+        last_message_direction=last_message_direction,
+        assigned_user_id=conversation.assigned_user_id,
+        assigned_user=assigned_user,
+        flow_session=_flow_session_from_row(flow_session, flow_name, node_title),
+    )
+
+
 def _conversation_out(db: Session, conversation: Conversation) -> ConversationOut:
     unread_stmt = select(func.count(Message.id)).where(Message.conversation_id == conversation.id, Message.direction == MessageDirection.INBOUND)
     if conversation.last_read_at:
         unread_stmt = unread_stmt.where(Message.created_at > conversation.last_read_at)
     unread_count = db.scalar(unread_stmt) or 0
-    last_message = db.scalar(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.desc()).limit(1))
+    last_message = db.scalar(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.desc(), Message.id.desc()).limit(1))
     assigned_user = db.get(User, conversation.assigned_user_id) if conversation.assigned_user_id else None
     return ConversationOut(
         id=conversation.id,
@@ -68,21 +104,46 @@ def _conversation_out(db: Session, conversation: Conversation) -> ConversationOu
         flow_session=_flow_session_out(db, conversation.id),
     )
 
-
 @router.get("", response_model=list[ConversationOut])
 def list_conversations(
     assignment: str = Query(default="all", pattern="^(all|mine|unassigned)$"),
     current: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Conversation).options(selectinload(Conversation.contact)).order_by(Conversation.last_message_at.desc())
+    latest_message_id = select(Message.id).where(Message.conversation_id == Conversation.id).order_by(Message.created_at.desc(), Message.id.desc()).limit(1).correlate(Conversation).scalar_subquery()
+    unread_count = select(func.count(Message.id)).where(
+        Message.conversation_id == Conversation.id,
+        Message.direction == MessageDirection.INBOUND,
+        (Conversation.last_read_at.is_(None)) | (Message.created_at > Conversation.last_read_at),
+    ).correlate(Conversation).scalar_subquery()
+    last_message = aliased(Message)
+    assigned_user = aliased(User)
+    stmt = (
+        select(
+            Conversation,
+            unread_count.label("unread_count"),
+            last_message.body,
+            last_message.direction,
+            assigned_user,
+            FlowSession,
+            Flow.name,
+            FlowNode.title,
+        )
+        .options(selectinload(Conversation.contact))
+        .outerjoin(last_message, last_message.id == latest_message_id)
+        .outerjoin(assigned_user, assigned_user.id == Conversation.assigned_user_id)
+        .outerjoin(FlowSession, FlowSession.conversation_id == Conversation.id)
+        .outerjoin(Flow, Flow.id == FlowSession.flow_id)
+        .outerjoin(FlowNode, FlowNode.id == FlowSession.current_node_id)
+        .order_by(Conversation.last_message_at.desc())
+    )
     if current.role == UserRole.AGENT:
         stmt = stmt.where(Conversation.assigned_user_id == current.id)
     elif assignment == "mine":
         stmt = stmt.where(Conversation.assigned_user_id == current.id)
     elif assignment == "unassigned":
         stmt = stmt.where(Conversation.assigned_user_id.is_(None))
-    return [_conversation_out(db, item) for item in db.scalars(stmt).all()]
+    return [_conversation_from_row(*row) for row in db.execute(stmt).all()]
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
