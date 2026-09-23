@@ -14,6 +14,7 @@ from app import flow_graph_integrity  # noqa: F401 - registers flow graph integr
 from app import http_api_models  # noqa: F401 - registers reusable HTTP API tables
 from app import developer_api_models  # noqa: F401 - registers Developer API tables
 from app import campaign_models  # noqa: F401 - registers reusable questionnaire campaigns
+from app import broadcast_models  # noqa: F401 - registers broadcast messaging tables
 from app import default_action_models  # noqa: F401 - registers channel Default Actions
 from app import canned_response_models  # noqa: F401 - registers Live Chat canned responses
 from app.flow_graph_integrity import repair_flow_start_nodes
