@@ -117,6 +117,21 @@ def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manag
     if b.status not in ("draft","scheduled"):raise HTTPException(409,"Broadcast cannot be queued from its current state")
     if not b.total_recipients:raise HTTPException(400,"Broadcast has no recipients")
     b.status="scheduled" if b.scheduled_at and b.scheduled_at>now() else "queued";b.updated_at=now();db.commit();db.refresh(b);return out(b)
+@router.post("/{broadcast_id}/pause")
+def pause(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    b=get_broadcast(db,broadcast_id)
+    if b.status not in ("queued","scheduled","sending"):raise HTTPException(409,"Only queued, scheduled or sending broadcasts can be paused")
+    b.status="paused";b.updated_at=now();db.commit();db.refresh(b);return out(b)
+
+@router.post("/{broadcast_id}/resume")
+def resume(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    b=get_broadcast(db,broadcast_id)
+    if b.status!="paused":raise HTTPException(409,"Only paused broadcasts can be resumed")
+    pending=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="pending")) or 0
+    sending=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="sending")) or 0
+    if not pending and not sending:raise HTTPException(409,"Broadcast has no recipients left to send")
+    b.status="queued";b.completed_at=None;b.updated_at=now();db.commit();db.refresh(b);return out(b)
+
 @router.post("/{broadcast_id}/cancel")
 def cancel(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
