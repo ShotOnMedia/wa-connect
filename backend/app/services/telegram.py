@@ -57,7 +57,10 @@ async def download_file(token,file_path):
     except httpx.HTTPError as exc:raise TelegramError(f"Telegram file download failed: {exc}") from exc
     if not r.is_success:raise TelegramError(f"Telegram file download failed: HTTP {r.status_code}")
     return r.content,r.headers.get("content-type") or "application/octet-stream"
-async def send_text(token,chat_id,text):return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text})
+async def send_text(token,chat_id,text,parse_mode=None):
+    payload={"chat_id":chat_id,"text":text}
+    if parse_mode:payload["parse_mode"]=parse_mode
+    return await telegram_api(token,"sendMessage",payload)
 async def send_location(token,chat_id,latitude,longitude):return await telegram_api(token,"sendLocation",{"chat_id":chat_id,"latitude":float(latitude),"longitude":float(longitude)})
 async def request_location(token,chat_id,text="Please share your current location.",button_text="Share location"):
     return await telegram_api(token,"sendMessage",{"chat_id":chat_id,"text":text,"reply_markup":{"keyboard":[[{"text":str(button_text or "Share location")[:64],"request_location":True}]],"resize_keyboard":True,"one_time_keyboard":True}})
@@ -83,9 +86,10 @@ async def send_product_card(token,chat_id,name,description="",price="",currency=
     if markup:payload["reply_markup"]=markup
     return await telegram_api(token,"sendMessage",payload)
 async def answer_callback(token,callback_query_id):await telegram_api(token,"answerCallbackQuery",{"callback_query_id":callback_query_id})
-async def send_media(token,chat_id,media_type,media,caption=None):
+async def send_media(token,chat_id,media_type,media,caption=None,parse_mode=None):
     methods={"image":("sendPhoto","photo"),"photo":("sendPhoto","photo"),"video":("sendVideo","video"),"audio":("sendAudio","audio"),"file":("sendDocument","document"),"document":("sendDocument","document")}
     if media_type not in methods:raise TelegramError(f"Unsupported Telegram media type: {media_type}")
     method,field=methods[media_type];payload={"chat_id":chat_id,field:media}
     if caption:payload["caption"]=caption
+    if parse_mode:payload["parse_mode"]=parse_mode
     return await telegram_api(token,method,payload)
