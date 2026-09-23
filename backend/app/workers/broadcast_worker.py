@@ -26,15 +26,25 @@ async def process_one():
             if b.last_sent_at and b.stagger_seconds:
                 elapsed=(now()-b.last_sent_at).total_seconds()
                 if elapsed<b.stagger_seconds:await asyncio.sleep(b.stagger_seconds-elapsed)
-            # Pause/cancel may happen while a stagger delay is sleeping. Re-read
-            # the broadcast immediately before the provider call so a claimed
-            # recipient is not sent after the operator has stopped delivery.
-            db.expire_all();b=db.get(Broadcast,bid);recipient=db.get(BroadcastRecipient,rid)
+            # Loading the bot above starts a MariaDB transaction.  With the
+            # default REPEATABLE READ isolation level, merely expiring ORM
+            # objects here can still re-read the old "sending" snapshot after
+            # an operator has committed Pause/Cancel in another connection.
+            # End that transaction first, then do the final stop check from a
+            # fresh transaction immediately before the Telegram API call.
+            db.rollback()
+            b=db.get(Broadcast,bid);recipient=db.get(BroadcastRecipient,rid)
             if b.status!="sending":
                 recipient.status="pending";recipient.attempts=max(0,recipient.attempts-1);recipient.updated_at=now();db.commit()
                 log.info("Broadcast %s stopped before recipient %s send; status=%s",bid,rid,b.status)
                 return True
-            result=await (send_media(bot.access_token,int(recipient.destination),b.media_type,b.media_url,recipient.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(recipient.destination),recipient.rendered_text,b.parse_mode))
+            # Copy everything needed for the provider call, then close the DB
+            # transaction so no snapshot is held while waiting on Telegram.
+            bot=db.get(TelegramBot,b.channel_account_id)
+            if not bot or not bot.active:raise RuntimeError("Telegram bot is unavailable")
+            token=bot.access_token;destination=int(recipient.destination);media_type=b.media_type;media_url=b.media_url;rendered_text=recipient.rendered_text;parse_mode=b.parse_mode
+            db.commit()
+            result=await (send_media(token,destination,media_type,media_url,rendered_text,parse_mode) if media_url else send_text(token,destination,rendered_text,parse_mode))
             mid=int(result["message_id"]);recipient=db.get(BroadcastRecipient,rid);recipient.status="sent";recipient.provider_message_id=str(mid);recipient.sent_at=now();recipient.last_error=None;recipient.updated_at=now()
             conv=db.get(TelegramConversation,recipient.conversation_id)
             if conv:
