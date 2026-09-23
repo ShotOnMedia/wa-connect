@@ -11,7 +11,7 @@ def now():return datetime.now(UTC).replace(tzinfo=None)
 
 async def process_one():
     with SessionLocal() as db:
-        b=db.scalar(select(Broadcast).where(Broadcast.status.in_(["queued","scheduled"]),((Broadcast.scheduled_at.is_(None))|(Broadcast.scheduled_at<=now()))).order_by(Broadcast.created_at,Broadcast.id).limit(1))
+        b=db.scalar(select(Broadcast).where(Broadcast.status.in_(["queued","scheduled","sending"]),((Broadcast.scheduled_at.is_(None))|(Broadcast.scheduled_at<=now()))).order_by(Broadcast.created_at,Broadcast.id).limit(1))
         if not b:return False
         if b.status!="sending":b.status="sending";b.started_at=b.started_at or now();b.updated_at=now();db.commit()
         recipient=db.scalar(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="pending").order_by(BroadcastRecipient.id).limit(1))
