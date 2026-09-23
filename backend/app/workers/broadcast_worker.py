@@ -5,7 +5,7 @@ from app.core.database import SessionLocal
 import app.models,app.telegram_models,app.broadcast_models
 from app.broadcast_models import Broadcast,BroadcastRecipient
 from app.telegram_models import TelegramBot,TelegramConversation,TelegramMessage
-from app.services.telegram import send_text
+from app.services.telegram import send_text,send_media
 logging.basicConfig(level=logging.INFO);log=logging.getLogger("broadcast-worker")
 def now():return datetime.now(UTC).replace(tzinfo=None)
 
@@ -23,13 +23,16 @@ async def process_one():
         try:
             bot=db.get(TelegramBot,b.channel_account_id)
             if not bot or not bot.active:raise RuntimeError("Telegram bot is unavailable")
-            result=await send_text(bot.access_token,int(recipient.destination),recipient.rendered_text)
+            if b.last_sent_at and b.stagger_seconds:
+                elapsed=(now()-b.last_sent_at).total_seconds()
+                if elapsed<b.stagger_seconds:await asyncio.sleep(b.stagger_seconds-elapsed)
+            result=await (send_media(bot.access_token,int(recipient.destination),b.media_type,b.media_url,recipient.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(recipient.destination),recipient.rendered_text,b.parse_mode))
             mid=int(result["message_id"]);recipient=db.get(BroadcastRecipient,rid);recipient.status="sent";recipient.provider_message_id=str(mid);recipient.sent_at=now();recipient.last_error=None;recipient.updated_at=now()
             conv=db.get(TelegramConversation,recipient.conversation_id)
             if conv:
                 db.add(TelegramMessage(conversation_id=conv.id,telegram_message_id=mid,direction="outbound",message_type="text",body=recipient.rendered_text,status="sent",telegram_timestamp=now()))
                 conv.last_message_at=now();conv.updated_at=now()
-            b=db.get(Broadcast,bid);b.sent_count+=1;b.updated_at=now();db.commit()
+            b=db.get(Broadcast,bid);b.sent_count+=1;b.last_sent_at=now();b.updated_at=now();db.commit()
         except Exception as exc:
             db.rollback();recipient=db.get(BroadcastRecipient,rid);b=db.get(Broadcast,bid)
             recipient.status="pending" if recipient.attempts<3 else "failed";recipient.last_error=str(exc)[:4000];recipient.updated_at=now()
