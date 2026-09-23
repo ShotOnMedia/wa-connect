@@ -10,7 +10,7 @@ from app.core.security import require_manager
 from app.models import Workspace
 from app.telegram_models import TelegramBot,TelegramContact,TelegramConversation,TelegramContactFieldValue
 from app.models import ContactFieldDefinition
-from app.services.telegram import send_text,send_media
+from app.services.telegram import TelegramError,send_text,send_media
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
