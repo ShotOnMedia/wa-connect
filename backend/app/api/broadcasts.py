@@ -20,7 +20,14 @@ def utc_naive(value):
 class BroadcastIn(BaseModel):
     name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);scheduled_at:datetime|None=None
 class TestIn(BaseModel):contact_id:int
-def workspace(db):
+def workspace(db, bot_id=None):
+    # Telegram bots are explicitly attached to a workspace.  When a bot is
+    # supplied, use that workspace instead of guessing from the first active
+    # workspace (multi-workspace installs can have more than one active row).
+    if bot_id is not None:
+        wid=db.scalar(select(TelegramBot.workspace_id).where(TelegramBot.id==bot_id))
+        if wid is None:raise HTTPException(404,"Telegram bot not found")
+        return wid
     wid=db.scalar(select(Workspace.id).where(Workspace.active.is_(True)).order_by(Workspace.id))
     if wid is None:raise HTTPException(400,"No active workspace")
     return wid
@@ -49,13 +56,13 @@ def list_broadcasts(db:Session=Depends(get_db),user=Depends(require_manager)):
     return [out(x) for x in db.scalars(select(Broadcast).where(Broadcast.workspace_id==workspace(db)).order_by(Broadcast.created_at.desc()).limit(200)).all()]
 @router.get("/telegram/audience")
 def telegram_audience(bot_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=workspace(db);bot=db.get(TelegramBot,bot_id)
+    wid=workspace(db,bot_id);bot=db.get(TelegramBot,bot_id)
     if not bot or bot.workspace_id!=wid:raise HTTPException(404,"Telegram bot not found")
     rows=audience(db,wid,bot_id,"all",[])
     return [{"id":c.id,"name":" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username or str(c.telegram_user_id),"username":c.username,"telegram_user_id":c.telegram_user_id} for c,_ in rows]
 @router.post("")
 def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=workspace(db)
+    wid=workspace(db,body.channel_account_id)
     if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
     bot=db.get(TelegramBot,body.channel_account_id)
     if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
