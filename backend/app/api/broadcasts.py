@@ -44,6 +44,11 @@ def audience(db,wid,bot_id,kind,ids):
         q=q.where(TelegramContact.id.in_(ids))
     elif kind!="all":raise HTTPException(400,"audience_type must be all or selected")
     return db.execute(q.order_by(TelegramContact.id)).all()
+def get_broadcast(db,broadcast_id):
+    b=db.get(Broadcast,broadcast_id)
+    if not b:raise HTTPException(404,"Broadcast not found")
+    return b
+
 def field_values(db,contact_ids):
     if not contact_ids:return {}
     rows=db.execute(select(TelegramContactFieldValue.contact_id,ContactFieldDefinition.key,TelegramContactFieldValue.value_text).join(ContactFieldDefinition,ContactFieldDefinition.id==TelegramContactFieldValue.field_id).where(TelegramContactFieldValue.contact_id.in_(contact_ids))).all()
@@ -72,26 +77,22 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
 @router.get("/{broadcast_id}")
 def detail(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=db.get(Broadcast,broadcast_id)
-    if not b or b.workspace_id!=workspace(db):raise HTTPException(404,"Broadcast not found")
+    b=get_broadcast(db,broadcast_id)
     data=out(b);data["recipients"]=[{"id":r.id,"contact_id":r.channel_contact_id,"display_name":r.display_name,"destination":r.destination,"status":r.status,"attempts":r.attempts,"last_error":r.last_error,"sent_at":r.sent_at} for r in db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id).order_by(BroadcastRecipient.id)).all()];return data
 @router.post("/{broadcast_id}/queue")
 def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=db.get(Broadcast,broadcast_id)
-    if not b or b.workspace_id!=workspace(db):raise HTTPException(404,"Broadcast not found")
+    b=get_broadcast(db,broadcast_id)
     if b.status not in ("draft","scheduled"):raise HTTPException(409,"Broadcast cannot be queued from its current state")
     if not b.total_recipients:raise HTTPException(400,"Broadcast has no recipients")
     b.status="scheduled" if b.scheduled_at and b.scheduled_at>now() else "queued";b.updated_at=now();db.commit();db.refresh(b);return out(b)
 @router.post("/{broadcast_id}/cancel")
 def cancel(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=db.get(Broadcast,broadcast_id)
-    if not b or b.workspace_id!=workspace(db):raise HTTPException(404,"Broadcast not found")
+    b=get_broadcast(db,broadcast_id)
     if b.status in ("completed","cancelled"):raise HTTPException(409,"Broadcast is already finished")
     b.status="cancelled";b.updated_at=now();db.commit();db.refresh(b);return out(b)
 @router.post("/{broadcast_id}/test")
 async def test(broadcast_id:int,body:TestIn,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=db.get(Broadcast,broadcast_id)
-    if not b or b.workspace_id!=workspace(db):raise HTTPException(404,"Broadcast not found")
+    b=get_broadcast(db,broadcast_id)
     r=db.scalar(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.channel_contact_id==body.contact_id))
     if not r:raise HTTPException(404,"Recipient is not in this broadcast audience")
     bot=db.get(TelegramBot,b.channel_account_id);result=await send_text(bot.access_token,int(r.destination),r.rendered_text)
