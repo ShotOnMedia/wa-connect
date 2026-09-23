@@ -46,7 +46,9 @@ function exportExcel(){const ws=XLSX.utils.json_to_sheet(reportRows());const wb=
 function exportPdf(){const doc=new jsPDF({orientation:'landscape'});doc.setFontSize(16);doc.text(report.value?.name||'Broadcast report',14,14);doc.setFontSize(9);doc.text('Status: '+(report.value?.status||'')+'   Recipients: '+(report.value?.total_recipients||0)+'   Sent: '+(report.value?.sent_count||0)+'   Failed: '+(report.value?.failed_count||0),14,21);const rows=reportRows();const heads=Object.keys(rows[0]||{Recipient:'',Destination:'',Status:'',Attempts:'','Provider Message ID':'','Sent At':'','Failure Reason':''});autoTable(doc,{startY:27,head:[heads],body:rows.map(r=>heads.map(h=>r[h])),styles:{fontSize:7}});doc.save(reportFilename('pdf'))}
 async function actOn(row,action){if(selected.value?.id!==row.id)selected.value=await api.broadcast(row.id);return action()}
 async function queue(){if(!selected.value)return;error.value='';try{selected.value=await api.queueBroadcast(selected.value.id);broadcasts.value=await api.broadcasts('telegram',Number(form.value.channel_account_id));success.value=selected.value.status==='scheduled'?'Broadcast scheduled.':'Broadcast queued for delivery.'}catch(e){error.value=e.message}}
-async function cancel(){if(!selected.value)return;error.value='';try{selected.value=await api.cancelBroadcast(selected.value.id);broadcasts.value=await api.broadcasts('telegram',Number(form.value.channel_account_id));success.value='Broadcast cancelled.'}catch(e){error.value=e.message}}
+async function pause(){if(!selected.value)return;error.value='';try{selected.value=await api.pauseBroadcast(selected.value.id);await loadHistory();success.value='Broadcast paused. Pending recipients will not be sent until you resume it.'}catch(e){error.value=e.message}}
+async function resume(){if(!selected.value)return;error.value='';try{selected.value=await api.resumeBroadcast(selected.value.id);await loadHistory();success.value='Broadcast resumed and queued for delivery.'}catch(e){error.value=e.message}}
+async function cancel(){if(!selected.value||!confirm('Cancel this broadcast? Recipients already sent will remain sent, but pending recipients will not be delivered.'))return;error.value='';try{selected.value=await api.cancelBroadcast(selected.value.id);await loadHistory();success.value='Broadcast cancelled.'}catch(e){error.value=e.message}}
 async function sendTest(r){error.value='';success.value='';try{await api.testBroadcast(selected.value.id,r.contact_id);success.value='Test message sent to '+(r.display_name||r.destination)+'.'}catch(e){error.value=e.message}}
 onMounted(load)
 </script>
@@ -68,7 +70,9 @@ onMounted(load)
     <button v-if="b.status==='draft'" class="small-btn" @click="actOn(b,editBroadcast)">Edit</button>
     <button v-if="b.status==='draft'" class="small-btn primary" @click="actOn(b,queue)">{{b.scheduled_at?'Schedule':'Send now'}}</button>
     <button v-if="b.status==='draft'" class="small-btn danger" @click="actOn(b,deleteBroadcast)">Delete</button>
-    <button v-if="!['draft','completed','cancelled','failed'].includes(b.status)" class="small-btn" @click="actOn(b,cancel)">Pause / Cancel</button>
+    <button v-if="['queued','scheduled','sending'].includes(b.status)" class="small-btn" @click="actOn(b,pause)">Pause</button>
+    <button v-if="b.status==='paused'" class="small-btn primary" @click="actOn(b,resume)">Resume</button>
+    <button v-if="['queued','scheduled','sending','paused'].includes(b.status)" class="small-btn danger" @click="actOn(b,cancel)">Cancel</button>
     <button class="small-btn" @click="openStats(b)">Stats</button>
   </span>
   <span class="chevron">{{selected?.id===b.id?'⌃':'⌄'}}</span>
