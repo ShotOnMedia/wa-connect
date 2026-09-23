@@ -26,6 +26,19 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  broadcast-worker:
+    build: ./backend
+    command: python -m app.workers.broadcast_worker
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build: ./frontend
     command: npm run dev -- --host 0.0.0.0
