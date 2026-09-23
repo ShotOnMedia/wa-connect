@@ -57,8 +57,11 @@ def field_values(db,contact_ids):
     return result
 
 @router.get("")
-def list_broadcasts(db:Session=Depends(get_db),user=Depends(require_manager)):
-    return [out(x) for x in db.scalars(select(Broadcast).where(Broadcast.workspace_id==workspace(db)).order_by(Broadcast.created_at.desc()).limit(200)).all()]
+def list_broadcasts(channel:str|None=None,channel_account_id:int|None=None,db:Session=Depends(get_db),user=Depends(require_manager)):
+    q=select(Broadcast)
+    if channel:q=q.where(Broadcast.channel==channel)
+    if channel_account_id is not None:q=q.where(Broadcast.channel_account_id==channel_account_id)
+    return [out(x) for x in db.scalars(q.order_by(Broadcast.created_at.desc()).limit(200)).all()]
 @router.get("/telegram/audience")
 def telegram_audience(bot_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=workspace(db,bot_id);bot=db.get(TelegramBot,bot_id)
