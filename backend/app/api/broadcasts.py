@@ -10,7 +10,7 @@ from app.core.security import require_manager
 from app.models import Workspace
 from app.telegram_models import TelegramBot,TelegramContact,TelegramConversation,TelegramContactFieldValue
 from app.models import ContactFieldDefinition
-from app.services.telegram import send_text
+from app.services.telegram import send_text,send_media
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -67,7 +67,10 @@ def telegram_fields(bot_id:int,db:Session=Depends(get_db),user=Depends(require_m
     wid=workspace(db,bot_id)
     custom=db.execute(select(ContactFieldDefinition.key,ContactFieldDefinition.label).where(ContactFieldDefinition.workspace_id==wid,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order,ContactFieldDefinition.label)).all()
     system=[{"key":"name","label":"Name"},{"key":"first_name","label":"First name"},{"key":"last_name","label":"Last name"},{"key":"username","label":"Username"},{"key":"subscriber_id","label":"Subscriber ID"}]
-    return system+[{"key":key,"label":label} for key,label in custom]
+    # A workspace may define a custom field with the same key as a built-in
+    # Telegram field.  Present each insertion token only once.
+    seen={item["key"] for item in system}
+    return system+[{"key":key,"label":label} for key,label in custom if key not in seen]
 
 @router.get("/telegram/audience")
 def telegram_audience(bot_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
@@ -124,5 +127,5 @@ async def test(broadcast_id:int,body:TestIn,db:Session=Depends(get_db),user=Depe
     b=get_broadcast(db,broadcast_id)
     r=db.scalar(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.channel_contact_id==body.contact_id))
     if not r:raise HTTPException(404,"Recipient is not in this broadcast audience")
-    bot=db.get(TelegramBot,b.channel_account_id);result=await send_text(bot.access_token,int(r.destination),r.rendered_text,b.parse_mode)
+    bot=db.get(TelegramBot,b.channel_account_id);result=await (send_media(bot.access_token,int(r.destination),b.media_type,b.media_url,r.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(r.destination),r.rendered_text,b.parse_mode))
     return {"ok":True,"telegram_message_id":result.get("message_id")}
