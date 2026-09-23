@@ -19,6 +19,7 @@ class Broadcast(Base):
     last_sent_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     audience_type:Mapped[str]=mapped_column(String(30),nullable=False,default="all")
     audience_filter_json:Mapped[str|None]=mapped_column(Text,nullable=True)
+    audience_segment_id:Mapped[int|None]=mapped_column(ForeignKey("audience_segments.id",ondelete="SET NULL"),nullable=True,index=True)
     status:Mapped[str]=mapped_column(String(20),nullable=False,default="draft",index=True)
     scheduled_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
