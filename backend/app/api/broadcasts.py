@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, UTC
 from fastapi import APIRouter,Depends,HTTPException,Response
@@ -17,8 +18,11 @@ def now():return datetime.now(UTC).replace(tzinfo=None)
 def utc_naive(value):
     if value is None:return None
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+class AudienceRule(BaseModel):field:str;operator:str="equals";value:str=""
+class AudienceFilter(BaseModel):logic:str="and";rules:list[AudienceRule]=Field(default_factory=list)
 class BroadcastIn(BaseModel):
-    name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
+    name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);audience_filter:AudienceFilter|None=None;scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
+class AudiencePreviewIn(BaseModel):bot_id:int;audience_filter:AudienceFilter
 class TestIn(BaseModel):contact_id:int
 def workspace(db, bot_id=None):
     # Telegram bots are explicitly attached to a workspace.  When a bot is
@@ -32,18 +36,42 @@ def workspace(db, bot_id=None):
     if wid is None:raise HTTPException(400,"No active workspace")
     return wid
 def out(b):
-    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"created_at":b.created_at,"updated_at":b.updated_at}
+    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"audience_filter":json.loads(b.audience_filter_json) if b.audience_filter_json else None,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"created_at":b.created_at,"updated_at":b.updated_at}
 def render(text,contact,fields):
     values={"name":" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username or str(contact.telegram_user_id),"first_name":contact.first_name or "","last_name":contact.last_name or "","username":contact.username or "","subscriber_id":str(contact.telegram_user_id)}
     values.update(fields)
     return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),text)
-def audience(db,wid,bot_id,kind,ids):
+def _system_values(contact):
+    return {"name":" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username or str(contact.telegram_user_id),"first_name":contact.first_name or "","last_name":contact.last_name or "","username":contact.username or "","subscriber_id":str(contact.telegram_user_id),"language_code":contact.language_code or ""}
+def _matches(value,operator,wanted):
+    value=str(value or "");wanted=str(wanted or "");a=value.casefold();b=wanted.casefold()
+    if operator=="equals":return a==b
+    if operator=="not_equals":return a!=b
+    if operator=="contains":return b in a
+    if operator=="not_contains":return b not in a
+    if operator=="starts_with":return a.startswith(b)
+    if operator=="ends_with":return a.endswith(b)
+    if operator=="is_empty":return not value.strip()
+    if operator=="is_not_empty":return bool(value.strip())
+    raise HTTPException(400,f"Unsupported audience filter operator: {operator}")
+def filter_contacts(db,rows,spec):
+    if not spec or not spec.rules:return rows
+    logic=spec.logic.lower()
+    if logic not in ("and","or"):raise HTTPException(400,"Filter logic must be and or or")
+    fv=field_values(db,[c.id for c,_ in rows]);out=[]
+    for contact,conv in rows:
+        values=_system_values(contact);values.update(fv.get(contact.id,{}))
+        checks=[_matches(values.get(rule.field,""),rule.operator,rule.value) for rule in spec.rules]
+        if (all(checks) if logic=="and" else any(checks)):out.append((contact,conv))
+    return out
+def audience(db,wid,bot_id,kind,ids,spec=None):
     q=select(TelegramContact,TelegramConversation).join(TelegramConversation,TelegramConversation.contact_id==TelegramContact.id).where(TelegramContact.workspace_id==wid,TelegramConversation.telegram_bot_id==bot_id,TelegramConversation.chat_type=="private")
     if kind=="selected":
         if not ids:return []
         q=q.where(TelegramContact.id.in_(ids))
-    elif kind!="all":raise HTTPException(400,"audience_type must be all or selected")
-    return db.execute(q.order_by(TelegramContact.id)).all()
+    elif kind not in ("all","filtered"):raise HTTPException(400,"audience_type must be all, selected or filtered")
+    rows=db.execute(q.order_by(TelegramContact.id)).all()
+    return filter_contacts(db,rows,spec) if kind=="filtered" else rows
 def get_broadcast(db,broadcast_id):
     b=db.get(Broadcast,broadcast_id)
     if not b:raise HTTPException(404,"Broadcast not found")
@@ -86,14 +114,19 @@ def telegram_audience(bot_id:int,db:Session=Depends(get_db),user=Depends(require
     if not bot or bot.workspace_id!=wid:raise HTTPException(404,"Telegram bot not found")
     rows=audience(db,wid,bot_id,"all",[])
     return [{"id":c.id,"name":" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username or str(c.telegram_user_id),"username":c.username,"telegram_user_id":c.telegram_user_id} for c,_ in rows]
+@router.post("/telegram/audience-preview")
+def telegram_audience_preview(body:AudiencePreviewIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=workspace(db,body.bot_id);rows=audience(db,wid,body.bot_id,"filtered",[],body.audience_filter)
+    return {"count":len(rows),"contacts":[{"id":c.id,"name":_system_values(c)["name"],"username":c.username,"telegram_user_id":c.telegram_user_id} for c,_ in rows[:100]]}
+
 @router.post("")
 def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=workspace(db,body.channel_account_id)
     if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
     bot=db.get(TelegramBot,body.channel_account_id)
     if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
-    b=Broadcast(workspace_id=wid,channel="telegram",channel_account_id=bot.id,name=body.name.strip(),message_text=body.message_text,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
-    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids);fv=field_values(db,[c.id for c,_ in rows])
+    b=Broadcast(workspace_id=wid,channel="telegram",channel_account_id=bot.id,name=body.name.strip(),message_text=body.message_text,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
+    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[c.id for c,_ in rows])
     for c,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=c.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username,rendered_text=render(body.message_text,c,fv.get(c.id,{})),status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
 @router.put("/{broadcast_id}")
@@ -103,9 +136,9 @@ def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Dep
     if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
     wid=workspace(db,body.channel_account_id);bot=db.get(TelegramBot,body.channel_account_id)
     if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
-    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids);fv=field_values(db,[contact.id for contact,_ in rows])
+    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[contact.id for contact,_ in rows])
     db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id==b.id).delete(synchronize_session=False)
-    b.workspace_id=wid;b.channel_account_id=bot.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
+    b.workspace_id=wid;b.channel_account_id=bot.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
     for contact,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username,rendered_text=render(body.message_text,contact,fv.get(contact.id,{})),status="pending",created_at=now(),updated_at=now()))
     db.commit();db.refresh(b);return out(b)
 
