@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -12,6 +12,11 @@ class Broadcast(Base):
     channel_account_id:Mapped[int]=mapped_column(BigInteger,nullable=False,index=True)
     name:Mapped[str]=mapped_column(String(150),nullable=False)
     message_text:Mapped[str]=mapped_column(Text,nullable=False)
+    parse_mode:Mapped[str]=mapped_column(String(20),nullable=False,default="HTML")
+    media_url:Mapped[str|None]=mapped_column(Text,nullable=True)
+    media_type:Mapped[str|None]=mapped_column(String(20),nullable=True)
+    stagger_seconds:Mapped[float]=mapped_column(Float,nullable=False,default=0.05)
+    last_sent_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     audience_type:Mapped[str]=mapped_column(String(30),nullable=False,default="all")
     status:Mapped[str]=mapped_column(String(20),nullable=False,default="draft",index=True)
     scheduled_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
