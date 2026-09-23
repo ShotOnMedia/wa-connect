@@ -18,6 +18,7 @@ class Broadcast(Base):
     stagger_seconds:Mapped[float]=mapped_column(Float,nullable=False,default=0.05)
     last_sent_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     audience_type:Mapped[str]=mapped_column(String(30),nullable=False,default="all")
+    audience_filter_json:Mapped[str|None]=mapped_column(Text,nullable=True)
     status:Mapped[str]=mapped_column(String(20),nullable=False,default="draft",index=True)
     scheduled_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
