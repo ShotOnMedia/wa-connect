@@ -110,7 +110,7 @@ def delete(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_mana
 @router.get("/{broadcast_id}")
 def detail(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
-    data=out(b);data["recipients"]=[{"id":r.id,"contact_id":r.channel_contact_id,"display_name":r.display_name,"destination":r.destination,"status":r.status,"attempts":r.attempts,"last_error":r.last_error,"sent_at":r.sent_at} for r in db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id).order_by(BroadcastRecipient.id)).all()];return data
+    data=out(b);data["recipients"]=[{"id":r.id,"contact_id":r.channel_contact_id,"display_name":r.display_name,"destination":r.destination,"status":r.status,"attempts":r.attempts,"provider_message_id":r.provider_message_id,"last_error":r.last_error,"sent_at":r.sent_at} for r in db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id).order_by(BroadcastRecipient.id)).all()];return data
 @router.post("/{broadcast_id}/queue")
 def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
