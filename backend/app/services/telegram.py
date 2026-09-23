@@ -89,7 +89,29 @@ async def answer_callback(token,callback_query_id):await telegram_api(token,"ans
 async def send_media(token,chat_id,media_type,media,caption=None,parse_mode=None):
     methods={"image":("sendPhoto","photo"),"photo":("sendPhoto","photo"),"video":("sendVideo","video"),"audio":("sendAudio","audio"),"file":("sendDocument","document"),"document":("sendDocument","document")}
     if media_type not in methods:raise TelegramError(f"Unsupported Telegram media type: {media_type}")
-    method,field=methods[media_type];payload={"chat_id":chat_id,field:media}
+    method,field=methods[media_type]
+    # Fetch remote media ourselves and upload it to Telegram.  This is more
+    # reliable for WA Connect proxy/media URLs than asking Telegram to fetch
+    # the URL from its own network.
+    if isinstance(media,str) and media.lower().startswith(("http://","https://")):
+        try:
+            async with httpx.AsyncClient(timeout=30.0,follow_redirects=True) as client:
+                source=await client.get(media)
+                source.raise_for_status()
+        except httpx.HTTPError as exc:raise TelegramError(f"Could not fetch broadcast media: {exc}") from exc
+        content_type=(source.headers.get("content-type") or "application/octet-stream").split(";",1)[0]
+        filename=media.rsplit("/",1)[-1].split("?",1)[0] or ("image.jpg" if media_type in ("image","photo") else "media")
+        data={"chat_id":str(chat_id)}
+        if caption:data["caption"]=caption
+        if parse_mode:data["parse_mode"]=parse_mode
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response=await client.post(f"https://api.telegram.org/bot{token}/{method}",data=data,files={field:(filename,source.content,content_type)})
+            result=response.json()
+        except (httpx.HTTPError,ValueError) as exc:raise TelegramError(f"Telegram media upload failed: {exc}") from exc
+        if not response.is_success or not result.get("ok"):raise TelegramError(result.get("description") or f"Telegram media upload failed: HTTP {response.status_code}")
+        return result.get("result")
+    payload={"chat_id":chat_id,field:media}
     if caption:payload["caption"]=caption
     if parse_mode:payload["parse_mode"]=parse_mode
     return await telegram_api(token,method,payload)
