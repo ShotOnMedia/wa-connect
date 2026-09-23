@@ -48,6 +48,14 @@ def get_broadcast(db,broadcast_id):
     b=db.get(Broadcast,broadcast_id)
     if not b:raise HTTPException(404,"Broadcast not found")
     return b
+def normalize_finished(db,b):
+    if b.status not in ("queued","scheduled","sending","paused"):return b
+    pending=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status.in_(["pending","sending"]))) or 0
+    if pending:return b
+    b.sent_count=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="sent")) or 0
+    b.failed_count=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="failed")) or 0
+    b.status="completed";b.completed_at=b.completed_at or now();b.updated_at=now();db.commit();db.refresh(b)
+    return b
 
 def field_values(db,contact_ids):
     if not contact_ids:return {}
@@ -61,7 +69,7 @@ def list_broadcasts(channel:str|None=None,channel_account_id:int|None=None,db:Se
     q=select(Broadcast)
     if channel:q=q.where(Broadcast.channel==channel)
     if channel_account_id is not None:q=q.where(Broadcast.channel_account_id==channel_account_id)
-    return [out(x) for x in db.scalars(q.order_by(Broadcast.created_at.desc()).limit(200)).all()]
+    return [out(normalize_finished(db,x)) for x in db.scalars(q.order_by(Broadcast.created_at.desc()).limit(200)).all()]
 @router.get("/telegram/fields")
 def telegram_fields(bot_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=workspace(db,bot_id)
@@ -109,7 +117,7 @@ def delete(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_mana
 
 @router.get("/{broadcast_id}")
 def detail(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=get_broadcast(db,broadcast_id)
+    b=normalize_finished(db,get_broadcast(db,broadcast_id))
     data=out(b);data["recipients"]=[{"id":r.id,"contact_id":r.channel_contact_id,"display_name":r.display_name,"destination":r.destination,"status":r.status,"attempts":r.attempts,"provider_message_id":r.provider_message_id,"last_error":r.last_error,"sent_at":r.sent_at} for r in db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id).order_by(BroadcastRecipient.id)).all()];return data
 @router.post("/{broadcast_id}/queue")
 def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
@@ -125,8 +133,8 @@ def pause(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manag
 
 @router.post("/{broadcast_id}/resume")
 def resume(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    b=get_broadcast(db,broadcast_id)
-    if b.status!="paused":raise HTTPException(409,"Only paused broadcasts can be resumed")
+    b=normalize_finished(db,get_broadcast(db,broadcast_id))
+    if b.status!="paused":raise HTTPException(409,"Broadcast is already complete" if b.status=="completed" else "Only paused broadcasts can be resumed")
     pending=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="pending")) or 0
     sending=db.scalar(select(func.count()).select_from(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.status=="sending")) or 0
     if not pending and not sending:raise HTTPException(409,"Broadcast has no recipients left to send")
