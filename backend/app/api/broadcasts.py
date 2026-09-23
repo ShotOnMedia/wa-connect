@@ -14,6 +14,9 @@ from app.services.telegram import send_text
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
+def utc_naive(value):
+    if value is None:return None
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 class BroadcastIn(BaseModel):
     name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);scheduled_at:datetime|None=None
 class TestIn(BaseModel):contact_id:int
@@ -56,7 +59,7 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
     if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
     bot=db.get(TelegramBot,body.channel_account_id)
     if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
-    b=Broadcast(workspace_id=wid,channel="telegram",channel_account_id=bot.id,name=body.name.strip(),message_text=body.message_text,audience_type=body.audience_type,status="draft",scheduled_at=body.scheduled_at,created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
+    b=Broadcast(workspace_id=wid,channel="telegram",channel_account_id=bot.id,name=body.name.strip(),message_text=body.message_text,audience_type=body.audience_type,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
     rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids);fv=field_values(db,[c.id for c,_ in rows])
     for c,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=c.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username,rendered_text=render(body.message_text,c,fv.get(c.id,{})),status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
