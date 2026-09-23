@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, UTC
-from fastapi import APIRouter,Depends,HTTPException
+from fastapi import APIRouter,Depends,HTTPException,Response
 from pydantic import BaseModel,Field
 from sqlalchemy import func,select
 from sqlalchemy.orm import Session
@@ -78,6 +78,25 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
     rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids);fv=field_values(db,[c.id for c,_ in rows])
     for c,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=c.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username,rendered_text=render(body.message_text,c,fv.get(c.id,{})),status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
+@router.put("/{broadcast_id}")
+def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    b=get_broadcast(db,broadcast_id)
+    if b.status!="draft":raise HTTPException(409,"Only draft broadcasts can be edited")
+    if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
+    wid=workspace(db,body.channel_account_id);bot=db.get(TelegramBot,body.channel_account_id)
+    if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
+    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids);fv=field_values(db,[contact.id for contact,_ in rows])
+    db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id==b.id).delete(synchronize_session=False)
+    b.workspace_id=wid;b.channel_account_id=bot.id;b.name=body.name.strip();b.message_text=body.message_text;b.audience_type=body.audience_type;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
+    for contact,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username,rendered_text=render(body.message_text,contact,fv.get(contact.id,{})),status="pending",created_at=now(),updated_at=now()))
+    db.commit();db.refresh(b);return out(b)
+
+@router.delete("/{broadcast_id}",status_code=204)
+def delete(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    b=get_broadcast(db,broadcast_id)
+    if b.status!="draft":raise HTTPException(409,"Only draft broadcasts can be deleted")
+    db.delete(b);db.commit();return Response(status_code=204)
+
 @router.get("/{broadcast_id}")
 def detail(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
