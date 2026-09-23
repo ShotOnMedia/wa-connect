@@ -102,7 +102,7 @@ def list_broadcasts(channel:str|None=None,channel_account_id:int|None=None,db:Se
 def telegram_fields(bot_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=workspace(db,bot_id)
     custom=db.execute(select(ContactFieldDefinition.key,ContactFieldDefinition.label).where(ContactFieldDefinition.workspace_id==wid,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order,ContactFieldDefinition.label)).all()
-    system=[{"key":"name","label":"Name"},{"key":"first_name","label":"First name"},{"key":"last_name","label":"Last name"},{"key":"username","label":"Username"},{"key":"subscriber_id","label":"Subscriber ID"}]
+    system=[{"key":"name","label":"Name"},{"key":"first_name","label":"First name"},{"key":"last_name","label":"Last name"},{"key":"username","label":"Username"},{"key":"subscriber_id","label":"Subscriber ID"},{"key":"language_code","label":"Language code"}]
     # A workspace may define a custom field with the same key as a built-in
     # Telegram field.  Present each insertion token only once.
     seen={item["key"] for item in system}
