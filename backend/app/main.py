@@ -32,7 +32,6 @@ from app.services.button_start_flow import install as install_button_start_flow
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
     install_flow_http_diagnostics();install_http_api_tracking_checkpoint();install_whatsapp_interactive_snapshot();install_question_choices();install_campaign_runtime();install_telegram_dynamic_checkpoint();install_button_start_flow();install_default_actions();install_multi_trigger();install_flow_interrupts()
     with SessionLocal() as db:
         ensure_bootstrap_admin(db);repair_flow_start_nodes(db)
