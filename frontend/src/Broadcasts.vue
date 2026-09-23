@@ -25,6 +25,7 @@ async function loadAudience(){audience.value=[];form.value.contact_ids=[];if(!fo
 function localDateTime(v){if(!v)return '';const d=new Date(v),pad=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes())}
 function resetForm(){editingId.value=null;form.value={name:'',channel_account_id:activeBots.value[0]?.id||'',message_text:'',audience_type:'all',contact_ids:[],scheduled_at:'',parse_mode:'HTML',media_url:'',media_type:'image',stagger_seconds:0.05};loadAudience()}
 function newBroadcast(){resetForm();composerOpen.value=true}
+async function duplicateBroadcast(row){error.value='';success.value='';try{const source=selected.value?.id===row.id?selected.value:await api.broadcast(row.id);editingId.value=null;form.value.name=(source.name+' Copy').slice(0,150);form.value.channel_account_id=source.channel_account_id;form.value.message_text=source.message_text;form.value.parse_mode=source.parse_mode||'HTML';form.value.media_url=source.media_url||'';form.value.media_type=source.media_type||'image';form.value.stagger_seconds=source.stagger_seconds||0.05;form.value.audience_type=source.audience_type;form.value.scheduled_at='';await Promise.all([loadAudience(),loadFields()]);if(source.audience_type==='selected')form.value.contact_ids=(source.recipients||[]).map(r=>r.contact_id);composerOpen.value=true;success.value='Broadcast copied into a new draft. Review it and click Create draft when ready.'}catch(e){error.value=e.message}}
 function closeComposer(){composerOpen.value=false;showEmoji.value=false;resetForm()}
 async function editBroadcast(){if(!selected.value||selected.value.status!=='draft')return;editingId.value=selected.value.id;form.value.name=selected.value.name;form.value.channel_account_id=selected.value.channel_account_id;form.value.message_text=selected.value.message_text;form.value.parse_mode=selected.value.parse_mode||'HTML';form.value.media_url=selected.value.media_url||'';form.value.media_type=selected.value.media_type||'image';form.value.stagger_seconds=selected.value.stagger_seconds||0.05;form.value.audience_type=selected.value.audience_type;form.value.scheduled_at=localDateTime(selected.value.scheduled_at);await loadAudience();if(form.value.audience_type==='selected')form.value.contact_ids=selected.value.recipients.map(r=>r.contact_id);composerOpen.value=true}
 async function deleteBroadcast(){if(!selected.value||selected.value.status!=='draft'||!confirm('Delete this draft broadcast? This cannot be undone.'))return;error.value='';try{await api.deleteBroadcast(selected.value.id);selected.value=null;editingId.value=null;composerOpen.value=false;resetForm();await loadHistory();success.value='Draft broadcast deleted.'}catch(e){error.value=e.message}}
@@ -67,12 +68,13 @@ onMounted(load)
   <span class="row-metric"><strong>{{b.failed_count}}</strong><small>Failed</small></span>
   <span class="row-status"><b class="status">{{b.status}}</b><small v-if="b.scheduled_at">{{fmt(b.scheduled_at)}}</small></span>
   <span class="row-actions" @click.stop>
+    <button class="small-btn" @click="duplicateBroadcast(b)">Duplicate</button>
     <button v-if="b.status==='draft'" class="small-btn" @click="actOn(b,editBroadcast)">Edit</button>
     <button v-if="b.status==='draft'" class="small-btn primary" @click="actOn(b,queue)">{{b.scheduled_at?'Schedule':'Send now'}}</button>
     <button v-if="b.status==='draft'" class="small-btn danger" @click="actOn(b,deleteBroadcast)">Delete</button>
     <button v-if="['queued','scheduled','sending'].includes(b.status)" class="small-btn" @click="actOn(b,pause)">Pause</button>
-    <button v-if="b.status==='paused'" class="small-btn primary" @click="actOn(b,resume)">Resume</button>
-    <button v-if="['queued','scheduled','sending','paused'].includes(b.status)" class="small-btn danger" @click="actOn(b,cancel)">Cancel</button>
+    <button v-if="b.status==='paused' && (b.sent_count+b.failed_count)<b.total_recipients" class="small-btn primary" @click="actOn(b,resume)">Resume</button>
+    <button v-if="['queued','scheduled','sending','paused'].includes(b.status) && (b.sent_count+b.failed_count)<b.total_recipients" class="small-btn danger" @click="actOn(b,cancel)">Cancel</button>
     <button class="small-btn" @click="openStats(b)">Stats</button>
   </span>
   <span class="chevron">{{selected?.id===b.id?'⌃':'⌄'}}</span>
