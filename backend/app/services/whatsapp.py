@@ -59,3 +59,10 @@ async def send_media_message(phone_number_id,access_token,to,media_type,media,ca
     if caption and wa_type!="audio":media_obj["caption"]=caption
     if filename and wa_type=="document":media_obj["filename"]=filename
     return await _send_message(phone_number_id,access_token,{"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":wa_type,wa_type:media_obj})
+async def list_message_templates(waba_id,access_token):
+    result=await _graph_get(f"{waba_id}/message_templates",access_token,{"fields":"id,name,status,category,language,components","limit":250})
+    return result.get("data",[])
+async def send_template_message(phone_number_id,access_token,to,name,language,components=None):
+    template={"name":name,"language":{"code":language}}
+    if components:template["components"]=components
+    return await _send_message(phone_number_id,access_token,{"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"template","template":template})
