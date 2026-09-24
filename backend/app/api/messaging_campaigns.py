@@ -1,14 +1,15 @@
 import json
-from datetime import datetime,UTC
+from datetime import datetime,UTC,timedelta
 from fastapi import APIRouter,Depends,HTTPException,Response
 from pydantic import BaseModel,Field
-from sqlalchemy import select
+from sqlalchemy import select,func
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import require_manager
-from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep
+from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep,MessagingCampaignRecipient,MessagingCampaignDelivery
 from app.models import Workspace,WhatsAppAccount,WhatsAppPhoneNumber
 from app.telegram_models import TelegramBot
+from app.api.broadcasts import AudienceFilter,audience,field_values,_system_values,render
 
 router=APIRouter(prefix="/messaging-campaigns",tags=["Messaging Campaigns"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -31,7 +32,8 @@ def workspace_for(db,channel,account_id):
     return wid
 def step_out(s):return {"id":s.id,"position":s.position,"name":s.name,"delay_seconds":s.delay_seconds,"message_mode":s.message_mode,"message_text":s.message_text,"provider_template":json.loads(s.provider_template_json) if s.provider_template_json else None,"parse_mode":s.parse_mode,"media_url":s.media_url,"media_type":s.media_type,"created_at":s.created_at,"updated_at":s.updated_at}
 def out(c,detail=False):
-    data={"id":c.id,"name":c.name,"description":c.description,"channel":c.channel,"channel_account_id":c.channel_account_id,"status":c.status,"audience_type":c.audience_type,"audience_filter":json.loads(c.audience_filter_json) if c.audience_filter_json else None,"audience_segment_id":c.audience_segment_id,"scheduled_at":c.scheduled_at,"started_at":c.started_at,"completed_at":c.completed_at,"step_count":len(c.steps),"created_at":c.created_at,"updated_at":c.updated_at}
+    recipients=getattr(c,"recipients",[]) or []
+    data={"id":c.id,"name":c.name,"description":c.description,"channel":c.channel,"channel_account_id":c.channel_account_id,"status":c.status,"audience_type":c.audience_type,"audience_filter":json.loads(c.audience_filter_json) if c.audience_filter_json else None,"audience_segment_id":c.audience_segment_id,"scheduled_at":c.scheduled_at,"started_at":c.started_at,"completed_at":c.completed_at,"step_count":len(c.steps),"recipient_count":len(recipients),"completed_recipients":sum(1 for r in recipients if r.status=="completed"),"failed_recipients":sum(1 for r in recipients if r.status=="failed"),"created_at":c.created_at,"updated_at":c.updated_at}
     if detail:data["steps"]=[step_out(x) for x in c.steps]
     return data
 def get(db,cid):
@@ -94,3 +96,59 @@ def move_step(cid:int,sid:int,direction:str,db:Session=Depends(get_db),user=Depe
     if other:
         tmp=-s.id;s.position=tmp;db.flush();other.position=s.position if False else (target+1 if direction=="up" else target-1);db.flush();s.position=target;db.commit()
     return out(c,True)
+
+
+def _campaign_runtime_out(db,c):
+    data=out(c,True)
+    data["recipients"]=[{"id":r.id,"contact_id":r.channel_contact_id,"display_name":r.display_name,"destination":r.destination,"status":r.status,"current_step_position":r.current_step_position,"started_at":r.started_at,"completed_at":r.completed_at,"failed_at":r.failed_at,"last_error":r.last_error} for r in db.scalars(select(MessagingCampaignRecipient).where(MessagingCampaignRecipient.campaign_id==c.id).order_by(MessagingCampaignRecipient.id)).all()]
+    data["deliveries"]=[{"id":d.id,"recipient_id":d.recipient_id,"step_id":d.step_id,"step_position":d.step_position,"status":d.status,"due_at":d.due_at,"attempts":d.attempts,"provider_message_id":d.provider_message_id,"sent_at":d.sent_at,"last_error":d.last_error} for d in db.scalars(select(MessagingCampaignDelivery).where(MessagingCampaignDelivery.campaign_id==c.id).order_by(MessagingCampaignDelivery.recipient_id,MessagingCampaignDelivery.step_position)).all()]
+    return data
+
+@router.get("/{cid}/runtime")
+def runtime(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    return _campaign_runtime_out(db,get(db,cid))
+
+@router.post("/{cid}/launch")
+def launch(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    c=get(db,cid)
+    if c.status!="draft":raise HTTPException(409,"Only draft campaigns can be launched")
+    if not c.steps:raise HTTPException(422,"Add at least one message before launching")
+    if c.channel!="telegram":raise HTTPException(422,"Campaign runtime is currently enabled for Telegram first")
+    bot=db.get(TelegramBot,c.channel_account_id)
+    if not bot or not bot.active:raise HTTPException(400,"Telegram bot is unavailable")
+    spec=AudienceFilter.model_validate(json.loads(c.audience_filter_json)) if c.audience_filter_json else None
+    rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
+    if not rows:raise HTTPException(422,"No eligible Telegram recipients matched this campaign audience")
+    values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    launch_at=c.scheduled_at if c.scheduled_at and c.scheduled_at>now() else now()
+    first=c.steps[0]
+    for contact,conv in rows:
+        fields=values_by_contact.get(contact.id,{})
+        values=_system_values(contact);values.update(fields)
+        recipient=MessagingCampaignRecipient(campaign_id=c.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=values["name"],field_values_json=json.dumps(values),status="pending",current_step_position=1,created_at=now(),updated_at=now())
+        db.add(recipient);db.flush()
+        rendered=render(first.message_text,contact,fields)
+        db.add(MessagingCampaignDelivery(campaign_id=c.id,recipient_id=recipient.id,step_id=first.id,step_position=first.position,rendered_text=rendered,media_url=first.media_url,media_type=first.media_type,parse_mode=first.parse_mode,status="pending",due_at=launch_at+timedelta(seconds=first.delay_seconds),created_at=now(),updated_at=now()))
+    c.status="scheduled" if launch_at>now() else "running";c.started_at=None if launch_at>now() else now();c.updated_at=now()
+    db.commit();db.refresh(c);return _campaign_runtime_out(db,c)
+
+@router.post("/{cid}/pause")
+def pause(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    c=get(db,cid)
+    if c.status not in ("running","scheduled"):raise HTTPException(409,"Only running or scheduled campaigns can be paused")
+    c.status="paused";c.updated_at=now();db.commit();db.refresh(c);return out(c,True)
+
+@router.post("/{cid}/resume")
+def resume(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    c=get(db,cid)
+    if c.status!="paused":raise HTTPException(409,"Only paused campaigns can be resumed")
+    c.status="running";c.started_at=c.started_at or now();c.updated_at=now();db.commit();db.refresh(c);return out(c,True)
+
+@router.post("/{cid}/cancel")
+def cancel(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    c=get(db,cid)
+    if c.status in ("completed","cancelled"):raise HTTPException(409,"Campaign is already finished")
+    if c.status=="draft":raise HTTPException(409,"Delete a draft campaign instead of cancelling it")
+    c.status="cancelled";c.updated_at=now()
+    for d in db.scalars(select(MessagingCampaignDelivery).where(MessagingCampaignDelivery.campaign_id==c.id,MessagingCampaignDelivery.status=="pending")).all():d.status="cancelled";d.updated_at=now()
+    db.commit();db.refresh(c);return out(c,True)
