@@ -103,7 +103,7 @@ onMounted(load)
       <div v-else class="table-wrap">
         <table>
           <thead>
-            <tr><th>ID</th><th>Flow / Campaign</th><th>Status</th><th>Contact</th><th>Started</th><th>Completed</th><th></th></tr>
+            <tr><th>ID</th><th>Flow / Questionnaire</th><th>Status</th><th>Contact</th><th>Started</th><th>Completed</th><th></th></tr>
           </thead>
           <tbody>
             <tr v-for="row in filtered" :key="row.id" @click="openDetail(row)">
