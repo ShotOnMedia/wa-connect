@@ -3,6 +3,7 @@ import {ref,watch,onBeforeUnmount} from 'vue'
 import {api} from './api'
 import Broadcasts from './Broadcasts.vue'
 import Campaigns from './Campaigns.vue'
+import CampaignEngine from './CampaignEngine.vue'
 import FlowBuilder from './FlowBuilder.vue'
 
 const props=defineProps({view:{type:String,default:'broadcasts'},currentUser:{type:Object,required:true}})
@@ -29,7 +30,7 @@ onBeforeUnmount(()=>api.setFlowChannel('whatsapp'))
 
   <div v-if="view==='broadcasts'" class="embedded" :key="'broadcasts-'+channel"><Broadcasts :channel="channel"/></div>
 
-  <div v-else-if="view==='campaigns'" class="coming"><span :class="['dot',channel==='telegram'?'tg':'wa']">{{channel==='telegram'?'T':'W'}}</span><div><strong>{{channel==='telegram'?'Telegram':'WhatsApp'}} Campaigns</strong><p>The campaign workspace is reserved for the new multi-message campaign engine.</p></div></div>
+  <div v-else-if="view==='campaigns'" class="campaign-host" :key="'campaigns-'+channel"><CampaignEngine :channel="channel"/></div>
 
   <div v-else-if="view==='flows'" class="flow-host shared-flows" :key="channel"><FlowBuilder :current-user="currentUser" :channel="channel"/></div>
   <div v-else-if="view==='questionnaires'" class="embedded questionnaires"><Campaigns :channel="channel"/></div>
