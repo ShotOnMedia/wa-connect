@@ -38,7 +38,7 @@ def workspace(db, bot_id=None):
     if wid is None:raise HTTPException(400,"No active workspace")
     return wid
 def out(b):
-    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"message_mode":b.message_mode,"provider_template":json.loads(b.provider_template_json) if b.provider_template_json else None,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"audience_filter":json.loads(b.audience_filter_json) if b.audience_filter_json else None,"audience_segment_id":b.audience_segment_id,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"created_at":b.created_at,"updated_at":b.updated_at}
+    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"message_mode":b.message_mode,"provider_template":json.loads(b.provider_template_json) if b.provider_template_json else None,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"audience_filter":json.loads(b.audience_filter_json) if b.audience_filter_json else None,"audience_segment_id":b.audience_segment_id,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"audience_evaluated_count":b.audience_evaluated_count,"audience_validation":json.loads(b.audience_validation_json) if b.audience_validation_json else [],"created_at":b.created_at,"updated_at":b.updated_at}
 def render(text,contact,fields):
     values={"name":" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username or str(contact.telegram_user_id),"first_name":contact.first_name or "","last_name":contact.last_name or "","username":contact.username or "","subscriber_id":str(contact.telegram_user_id)}
     values.update(fields)
@@ -129,6 +129,18 @@ def validate_whatsapp_template_recipients(recipients):
         sample=", ".join((row["name"] or row["destination"]) for row in invalid[:5]);more=f" and {len(invalid)-5} more" if len(invalid)>5 else ""
         raise HTTPException(422,detail={"code":"unresolved_template_fields","message":f"WhatsApp template has unresolved recipient fields: {', '.join('%'+x+'%' for x in fields)}. Affected recipients: {sample}{more}.","fields":fields,"affected_recipients":len(invalid),"recipients":invalid[:25]})
 
+def text_token_issues(text):return [{"path":"message","token":m.group(0),"field":m.group(1)} for m in _TOKEN_RE.finditer(text or "")]
+def validation_row(contact_id,name,destination,status,reasons,values=None):
+    return {"contact_id":contact_id,"display_name":name,"destination":destination,"status":status,"reasons":reasons,"values":values or {}}
+def missing_reasons(issues,prefix="Missing value"):
+    seen=[]
+    for x in issues:
+        if x["field"] not in seen:seen.append(x["field"])
+    return [{"code":"missing_field","field":key,"message":f"{prefix} for %{key}%"} for key in seen]
+
+def set_validation(b,report):
+    b.audience_evaluated_count=len(report);b.audience_validation_json=json.dumps(report)
+
 def whatsapp_render(text,contact,fields):
     values=whatsapp_system_values(contact);values.update(fields);return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),text)
 
@@ -214,36 +226,47 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
         if not account or not account.active:raise HTTPException(400,"Select an active WhatsApp connection")
     else:raise HTTPException(400,"Unsupported broadcast channel")
     b=Broadcast(workspace_id=wid,channel=body.channel,channel_account_id=account.id,name=body.name.strip(),message_text=body.message_text,message_mode=body.message_mode,provider_template_json=json.dumps(body.provider_template) if body.provider_template else None,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
+    report=[];ready=0
     if body.channel=="telegram":
         rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
-        for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=_system_values(x)["name"],rendered_text=render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
-    else:
-        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter,body.message_mode!="template");fv=whatsapp_field_values(db,[x.id for x,_ in rows])
         for x,conv in rows:
-            values=whatsapp_system_values(x);values.update(fv.get(x.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None
-            db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=whatsapp_render(body.message_text,x,fv.get(x.id,{})),provider_payload_json=json.dumps(provider_payload) if provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()))
-    b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
+            values=_system_values(x);values.update(fv.get(x.id,{}));rendered=render(body.message_text,x,fv.get(x.id,{}));issues=text_token_issues(rendered);name=values["name"];dest=str(conv.chat_id)
+            if issues:report.append(validation_row(x.id,name,dest,"excluded",missing_reasons(issues),{i["field"]:values.get(i["field"],"") for i in issues}));continue
+            report.append(validation_row(x.id,name,dest,"ready",[]));db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=dest,display_name=name,rendered_text=rendered,status="pending",created_at=now(),updated_at=now()));ready+=1
+    else:
+        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter,False);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+        for x,conv in rows:
+            values=whatsapp_system_values(x);values.update(fv.get(x.id,{}));rendered=whatsapp_render(body.message_text,x,fv.get(x.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None;issues=unresolved_provider_tokens(provider_payload) if body.message_mode=="template" else text_token_issues(rendered);reasons=missing_reasons(issues)
+            if body.message_mode!="template" and (not conv.service_window_expires_at or conv.service_window_expires_at<=now()):reasons.append({"code":"service_window_closed","message":"WhatsApp customer service window is closed"})
+            if reasons:report.append(validation_row(x.id,x.name or x.wa_id,x.wa_id,"excluded",reasons,{i["field"]:values.get(i["field"],"") for i in issues}));continue
+            report.append(validation_row(x.id,x.name or x.wa_id,x.wa_id,"ready",[]));db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=rendered,provider_payload_json=json.dumps(provider_payload) if provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()));ready+=1
+    b.total_recipients=ready;set_validation(b,report);db.commit();db.refresh(b);return out(b)
+
 @router.put("/{broadcast_id}")
 def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
     if b.status!="draft":raise HTTPException(409,"Only draft broadcasts can be edited")
-    if body.channel=="telegram":
-        wid=workspace(db,body.channel_account_id);account=db.get(TelegramBot,body.channel_account_id)
-        if not account or account.workspace_id!=wid or not account.active:raise HTTPException(400,"Select an active Telegram bot")
-        rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
-    elif body.channel=="whatsapp":
-        wid=whatsapp_workspace(db,body.channel_account_id);account=db.get(WhatsAppPhoneNumber,body.channel_account_id)
-        if not account or not account.active:raise HTTPException(400,"Select an active WhatsApp connection")
-        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+    if body.channel=="telegram":wid=workspace(db,body.channel_account_id);account=db.get(TelegramBot,body.channel_account_id)
+    elif body.channel=="whatsapp":wid=whatsapp_workspace(db,body.channel_account_id);account=db.get(WhatsAppPhoneNumber,body.channel_account_id)
     else:raise HTTPException(400,"Unsupported broadcast channel")
+    if not account or not account.active:raise HTTPException(400,f"Select an active {body.channel.title()} connection")
     db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id==b.id).delete(synchronize_session=False)
-    b.workspace_id=wid;b.channel=body.channel;b.channel_account_id=account.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
-    for contact,conv in rows:
-        if body.channel=="telegram": destination=str(conv.chat_id);display=_system_values(contact)["name"];rendered=render(body.message_text,contact,fv.get(contact.id,{}))
-        else:
-            destination=contact.wa_id;display=contact.name or contact.wa_id;rendered=whatsapp_render(body.message_text,contact,fv.get(contact.id,{}));values=whatsapp_system_values(contact);values.update(fv.get(contact.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None
-        db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=destination,display_name=display,rendered_text=rendered,provider_payload_json=json.dumps(provider_payload) if body.channel=="whatsapp" and provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()))
-    db.commit();db.refresh(b);return out(b)
+    b.workspace_id=wid;b.channel=body.channel;b.channel_account_id=account.id;b.name=body.name.strip();b.message_text=body.message_text;b.message_mode=body.message_mode;b.provider_template_json=json.dumps(body.provider_template) if body.provider_template else None;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None;b.scheduled_at=utc_naive(body.scheduled_at);b.sent_count=0;b.failed_count=0;b.updated_at=now()
+    report=[];ready=0
+    if body.channel=="telegram":
+        rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
+        for contact,conv in rows:
+            values=_system_values(contact);values.update(fv.get(contact.id,{}));rendered=render(body.message_text,contact,fv.get(contact.id,{}));issues=text_token_issues(rendered);dest=str(conv.chat_id);name=values["name"]
+            if issues:report.append(validation_row(contact.id,name,dest,"excluded",missing_reasons(issues),{i["field"]:values.get(i["field"],"") for i in issues}));continue
+            report.append(validation_row(contact.id,name,dest,"ready",[]));db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=dest,display_name=name,rendered_text=rendered,status="pending",created_at=now(),updated_at=now()));ready+=1
+    else:
+        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter,False);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+        for contact,conv in rows:
+            values=whatsapp_system_values(contact);values.update(fv.get(contact.id,{}));rendered=whatsapp_render(body.message_text,contact,fv.get(contact.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None;issues=unresolved_provider_tokens(provider_payload) if body.message_mode=="template" else text_token_issues(rendered);reasons=missing_reasons(issues)
+            if body.message_mode!="template" and (not conv.service_window_expires_at or conv.service_window_expires_at<=now()):reasons.append({"code":"service_window_closed","message":"WhatsApp customer service window is closed"})
+            if reasons:report.append(validation_row(contact.id,contact.name or contact.wa_id,contact.wa_id,"excluded",reasons,{i["field"]:values.get(i["field"],"") for i in issues}));continue
+            report.append(validation_row(contact.id,contact.name or contact.wa_id,contact.wa_id,"ready",[]));db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=contact.wa_id,display_name=contact.name or contact.wa_id,rendered_text=rendered,provider_payload_json=json.dumps(provider_payload) if provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()));ready+=1
+    b.total_recipients=ready;set_validation(b,report);db.commit();db.refresh(b);return out(b)
 
 @router.delete("/{broadcast_id}",status_code=204)
 def delete(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
@@ -260,7 +283,9 @@ def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manag
     b=get_broadcast(db,broadcast_id)
     if b.status not in ("draft","scheduled"):raise HTTPException(409,"Broadcast cannot be queued from its current state")
     if b.channel=="whatsapp" and b.message_mode=="template":validate_whatsapp_template_recipients(db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id)).all())
-    if not b.total_recipients:raise HTTPException(400,"Broadcast has no recipients")
+    if not b.total_recipients:
+        excluded=sum(1 for x in (json.loads(b.audience_validation_json) if b.audience_validation_json else []) if x.get("status")=="excluded")
+        raise HTTPException(422,detail={"code":"no_valid_recipients","message":f"No recipients passed audience validation. {excluded} contact{' was' if excluded==1 else 's were'} evaluated and excluded.","broadcast_id":b.id})
     b.status="scheduled" if b.scheduled_at and b.scheduled_at>now() else "queued";b.updated_at=now();db.commit();db.refresh(b);return out(b)
 @router.post("/{broadcast_id}/pause")
 def pause(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
