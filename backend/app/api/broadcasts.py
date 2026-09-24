@@ -181,13 +181,21 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
 def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
     if b.status!="draft":raise HTTPException(409,"Only draft broadcasts can be edited")
-    if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
-    wid=workspace(db,body.channel_account_id);bot=db.get(TelegramBot,body.channel_account_id)
-    if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
-    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[contact.id for contact,_ in rows])
+    if body.channel=="telegram":
+        wid=workspace(db,body.channel_account_id);account=db.get(TelegramBot,body.channel_account_id)
+        if not account or account.workspace_id!=wid or not account.active:raise HTTPException(400,"Select an active Telegram bot")
+        rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
+    elif body.channel=="whatsapp":
+        wid=whatsapp_workspace(db,body.channel_account_id);account=db.get(WhatsAppPhoneNumber,body.channel_account_id)
+        if not account or not account.active:raise HTTPException(400,"Select an active WhatsApp connection")
+        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+    else:raise HTTPException(400,"Unsupported broadcast channel")
     db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id==b.id).delete(synchronize_session=False)
-    b.workspace_id=wid;b.channel_account_id=bot.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
-    for contact,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username,rendered_text=render(body.message_text,contact,fv.get(contact.id,{})),status="pending",created_at=now(),updated_at=now()))
+    b.workspace_id=wid;b.channel=body.channel;b.channel_account_id=account.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
+    for contact,conv in rows:
+        if body.channel=="telegram": destination=str(conv.chat_id);display=_system_values(contact)["name"];rendered=render(body.message_text,contact,fv.get(contact.id,{}))
+        else: destination=contact.wa_id;display=contact.name or contact.wa_id;rendered=whatsapp_render(body.message_text,contact,fv.get(contact.id,{}))
+        db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=destination,display_name=display,rendered_text=rendered,status="pending",created_at=now(),updated_at=now()))
     db.commit();db.refresh(b);return out(b)
 
 @router.delete("/{broadcast_id}",status_code=204)
