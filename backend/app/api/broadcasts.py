@@ -24,7 +24,7 @@ class AudienceFilter(BaseModel):logic:str="and";rules:list[AudienceRule]=Field(d
 class BroadcastIn(BaseModel):
     name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);audience_filter:AudienceFilter|None=None;audience_segment_id:int|None=None;scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
 class AudiencePreviewIn(BaseModel):bot_id:int;audience_filter:AudienceFilter
-class WhatsAppAudiencePreviewIn(BaseModel):phone_number_id:int;audience_filter:AudienceFilter
+class WhatsAppAudiencePreviewIn(BaseModel):phone_number_id:int;audience_filter:AudienceFilter;message_mode:str="freeform"
 class TestIn(BaseModel):contact_id:int
 def workspace(db, bot_id=None):
     # Telegram bots are explicitly attached to a workspace.  When a bot is
@@ -171,11 +171,11 @@ async def whatsapp_templates(phone_number_id:int,db:Session=Depends(get_db),user
 def whatsapp_fields(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=whatsapp_workspace(db,phone_number_id);custom=db.execute(select(ContactFieldDefinition.key,ContactFieldDefinition.label).where(ContactFieldDefinition.workspace_id==wid,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order,ContactFieldDefinition.label)).all();system=[{"key":"name","label":"Name"},{"key":"phone","label":"Phone number"},{"key":"wa_id","label":"WhatsApp ID"}];seen={x["key"] for x in system};return system+[{"key":k,"label":l} for k,l in custom if k not in seen]
 @router.get("/whatsapp/audience")
-def whatsapp_audience_endpoint(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=whatsapp_workspace(db,phone_number_id);rows=whatsapp_audience(db,wid,phone_number_id,"all",[]);return [{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows]
+def whatsapp_audience_endpoint(phone_number_id:int,message_mode:str="freeform",db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=whatsapp_workspace(db,phone_number_id);rows=whatsapp_audience(db,wid,phone_number_id,"all",[],None,message_mode!="template");return [{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows]
 @router.post("/whatsapp/audience-preview")
 def whatsapp_audience_preview(body:WhatsAppAudiencePreviewIn,db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=whatsapp_workspace(db,body.phone_number_id);rows=whatsapp_audience(db,wid,body.phone_number_id,"filtered",[],body.audience_filter);return {"count":len(rows),"contacts":[{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows[:100]]}
+    wid=whatsapp_workspace(db,body.phone_number_id);rows=whatsapp_audience(db,wid,body.phone_number_id,"filtered",[],body.audience_filter,body.message_mode!="template");return {"count":len(rows),"contacts":[{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows[:100]]}
 
 @router.post("")
 def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
