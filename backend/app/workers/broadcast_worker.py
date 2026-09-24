@@ -61,7 +61,7 @@ async def process_one():
                 phone_number_id=account.phone_number_id;destination=recipient.destination;media_type=b.media_type;media_url=b.media_url;rendered_text=recipient.rendered_text;db.commit()
                 
                 if b.message_mode=="template":
-                    snap=json.loads(b.provider_template_json or "{}");components=snap.get("components_payload") or []
+                    snap=json.loads(b.provider_template_json or "{}");components=json.loads(recipient.provider_payload_json) if recipient.provider_payload_json else (snap.get("components_payload") or [])
                     result=await send_template_message(phone_number_id,token,destination,snap["name"],snap["language"],components)
                 else:result=await (send_media_message(phone_number_id,token,destination,media_type,media_url,rendered_text) if media_url else send_text_message(phone_number_id,token,destination,rendered_text))
                 mid=str((result.get("messages") or [{}])[0].get("id") or "")
