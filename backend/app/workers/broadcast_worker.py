@@ -8,7 +8,7 @@ from app.telegram_models import TelegramBot,TelegramConversation,TelegramMessage
 from app.models import WhatsAppPhoneNumber,Conversation,Message,MessageDirection,MessageStatus
 from app.core.config import settings
 from app.services.telegram import send_text,send_media
-from app.services.whatsapp import send_text_message,send_media_message
+from app.services.whatsapp import send_text_message,send_media_message,send_template_message
 logging.basicConfig(level=logging.INFO);log=logging.getLogger("broadcast-worker")
 def now():return datetime.now(UTC).replace(tzinfo=None)
 
@@ -59,7 +59,12 @@ async def process_one():
                 token=account.access_token or settings.meta_access_token
                 if not token:raise RuntimeError("No WhatsApp access token configured")
                 phone_number_id=account.phone_number_id;destination=recipient.destination;media_type=b.media_type;media_url=b.media_url;rendered_text=recipient.rendered_text;db.commit()
-                result=await (send_media_message(phone_number_id,token,destination,media_type,media_url,rendered_text) if media_url else send_text_message(phone_number_id,token,destination,rendered_text));mid=str((result.get("messages") or [{}])[0].get("id") or "")
+                
+                if b.message_mode=="template":
+                    snap=json.loads(b.provider_template_json or "{}");components=snap.get("components_payload") or []
+                    result=await send_template_message(phone_number_id,token,destination,snap["name"],snap["language"],components)
+                else:result=await (send_media_message(phone_number_id,token,destination,media_type,media_url,rendered_text) if media_url else send_text_message(phone_number_id,token,destination,rendered_text))
+                mid=str((result.get("messages") or [{}])[0].get("id") or "")
             recipient=db.get(BroadcastRecipient,rid);recipient.status="sent";recipient.provider_message_id=mid or None;recipient.sent_at=now();recipient.last_error=None;recipient.updated_at=now()
             if b.channel=="telegram":
                 conv=db.get(TelegramConversation,recipient.conversation_id)
