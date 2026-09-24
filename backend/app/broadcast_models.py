@@ -30,6 +30,8 @@ class Broadcast(Base):
     total_recipients:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
     sent_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
     failed_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    audience_evaluated_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    audience_validation_json:Mapped[str|None]=mapped_column(Text,nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
     updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
     recipients:Mapped[list["BroadcastRecipient"]]=relationship(back_populates="broadcast",cascade="all, delete-orphan")
