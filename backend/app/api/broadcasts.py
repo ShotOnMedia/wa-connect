@@ -101,6 +101,12 @@ def whatsapp_audience(db,wid,phone_id,kind,ids,spec=None,require_open_window=Tru
         if all(checks) if spec.logic.lower()=="and" else any(checks):out.append((contact,conv))
     return out
 
+def render_provider_payload(value,values):
+    if isinstance(value,str):return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),value)
+    if isinstance(value,list):return [render_provider_payload(x,values) for x in value]
+    if isinstance(value,dict):return {k:render_provider_payload(v,values) for k,v in value.items()}
+    return value
+
 def whatsapp_render(text,contact,fields):
     values=whatsapp_system_values(contact);values.update(fields);return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),text)
 
@@ -186,7 +192,9 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
         for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=_system_values(x)["name"],rendered_text=render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
     else:
         rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter,body.message_mode!="template");fv=whatsapp_field_values(db,[x.id for x,_ in rows])
-        for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=whatsapp_render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
+        for x,conv in rows:
+            values=whatsapp_system_values(x);values.update(fv.get(x.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None
+            db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=whatsapp_render(body.message_text,x,fv.get(x.id,{})),provider_payload_json=json.dumps(provider_payload) if provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
 @router.put("/{broadcast_id}")
 def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
@@ -205,8 +213,9 @@ def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Dep
     b.workspace_id=wid;b.channel=body.channel;b.channel_account_id=account.id;b.name=body.name.strip();b.message_text=body.message_text;b.parse_mode=body.parse_mode;b.media_url=body.media_url;b.media_type=body.media_type;b.stagger_seconds=body.stagger_seconds;b.audience_type=body.audience_type;b.audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None;b.audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None;b.scheduled_at=utc_naive(body.scheduled_at);b.total_recipients=len(rows);b.sent_count=0;b.failed_count=0;b.updated_at=now()
     for contact,conv in rows:
         if body.channel=="telegram": destination=str(conv.chat_id);display=_system_values(contact)["name"];rendered=render(body.message_text,contact,fv.get(contact.id,{}))
-        else: destination=contact.wa_id;display=contact.name or contact.wa_id;rendered=whatsapp_render(body.message_text,contact,fv.get(contact.id,{}))
-        db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=destination,display_name=display,rendered_text=rendered,status="pending",created_at=now(),updated_at=now()))
+        else:
+            destination=contact.wa_id;display=contact.name or contact.wa_id;rendered=whatsapp_render(body.message_text,contact,fv.get(contact.id,{}));values=whatsapp_system_values(contact);values.update(fv.get(contact.id,{}));provider_payload=render_provider_payload((body.provider_template or {}).get("components_payload") or [],values) if body.message_mode=="template" else None
+        db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=destination,display_name=display,rendered_text=rendered,provider_payload_json=json.dumps(provider_payload) if body.channel=="whatsapp" and provider_payload is not None else None,status="pending",created_at=now(),updated_at=now()))
     db.commit();db.refresh(b);return out(b)
 
 @router.delete("/{broadcast_id}",status_code=204)
