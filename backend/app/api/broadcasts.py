@@ -87,7 +87,7 @@ def whatsapp_field_values(db,contact_ids):
 
 def whatsapp_system_values(contact):return {"name":contact.name or contact.wa_id,"phone":contact.wa_id,"wa_id":contact.wa_id}
 def whatsapp_audience(db,wid,phone_id,kind,ids,spec=None):
-    q=select(Contact,Conversation).join(Conversation,Conversation.contact_id==Contact.id).where(Contact.workspace_id==wid,Conversation.phone_number_id==phone_id,Contact.archived_at.is_(None),Contact.blocked_at.is_(None))
+    q=select(Contact,Conversation).join(Conversation,Conversation.contact_id==Contact.id).where(Contact.workspace_id==wid,Conversation.phone_number_id==phone_id,Contact.archived_at.is_(None),Contact.blocked_at.is_(None),Conversation.service_window_expires_at.is_not(None),Conversation.service_window_expires_at>now())
     if kind=="selected":
         if not ids:return []
         q=q.where(Contact.id.in_(ids))
@@ -239,5 +239,13 @@ async def test(broadcast_id:int,body:TestIn,db:Session=Depends(get_db),user=Depe
     b=get_broadcast(db,broadcast_id)
     r=db.scalar(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.channel_contact_id==body.contact_id))
     if not r:raise HTTPException(404,"Recipient is not in this broadcast audience")
-    bot=db.get(TelegramBot,b.channel_account_id);result=await (send_media(bot.access_token,int(r.destination),b.media_type,b.media_url,r.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(r.destination),r.rendered_text,b.parse_mode))
-    return {"ok":True,"telegram_message_id":result.get("message_id")}
+    if b.channel=="telegram":
+        bot=db.get(TelegramBot,b.channel_account_id);result=await (send_media(bot.access_token,int(r.destination),b.media_type,b.media_url,r.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(r.destination),r.rendered_text,b.parse_mode));return {"ok":True,"provider_message_id":result.get("message_id")}
+    phone=db.get(WhatsAppPhoneNumber,b.channel_account_id)
+    if not phone or not phone.active:raise HTTPException(400,"WhatsApp connection is unavailable")
+    conv=db.get(Conversation,r.conversation_id)
+    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise HTTPException(409,"This contact is outside the WhatsApp service window; an approved template message is required")
+    from app.core.config import settings
+    token=phone.access_token or settings.meta_access_token
+    if not token:raise HTTPException(503,"No WhatsApp access token configured")
+    result=await (send_media_message(phone.phone_number_id,token,r.destination,b.media_type,b.media_url,r.rendered_text) if b.media_url else send_text_message(phone.phone_number_id,token,r.destination,r.rendered_text));return {"ok":True,"provider_message_id":((result.get("messages") or [{}])[0].get("id"))}
