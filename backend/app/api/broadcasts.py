@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session
 from app.broadcast_models import Broadcast,BroadcastRecipient
 from app.core.database import get_db
 from app.core.security import require_manager
-from app.models import Workspace
+from app.models import Workspace,WhatsAppPhoneNumber,WhatsAppAccount,Contact,Conversation,ContactFieldValue
 from app.telegram_models import TelegramBot,TelegramContact,TelegramConversation,TelegramContactFieldValue
 from app.models import ContactFieldDefinition
 from app.services.telegram import TelegramError,send_text,send_media
+from app.services.whatsapp import send_text_message,send_media_message
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -23,6 +24,7 @@ class AudienceFilter(BaseModel):logic:str="and";rules:list[AudienceRule]=Field(d
 class BroadcastIn(BaseModel):
     name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);audience_filter:AudienceFilter|None=None;audience_segment_id:int|None=None;scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
 class AudiencePreviewIn(BaseModel):bot_id:int;audience_filter:AudienceFilter
+class WhatsAppAudiencePreviewIn(BaseModel):phone_number_id:int;audience_filter:AudienceFilter
 class TestIn(BaseModel):contact_id:int
 def workspace(db, bot_id=None):
     # Telegram bots are explicitly attached to a workspace.  When a bot is
@@ -72,6 +74,35 @@ def audience(db,wid,bot_id,kind,ids,spec=None):
     elif kind not in ("all","filtered"):raise HTTPException(400,"audience_type must be all, selected or filtered")
     rows=db.execute(q.order_by(TelegramContact.id)).all()
     return filter_contacts(db,rows,spec) if kind=="filtered" else rows
+def whatsapp_workspace(db,phone_id):
+    wid=db.scalar(select(WhatsAppAccount.workspace_id).join(WhatsAppPhoneNumber,WhatsAppPhoneNumber.whatsapp_account_id==WhatsAppAccount.id).where(WhatsAppPhoneNumber.id==phone_id))
+    if wid is None:raise HTTPException(404,"WhatsApp connection not found")
+    return wid
+
+def whatsapp_field_values(db,contact_ids):
+    if not contact_ids:return {}
+    rows=db.execute(select(ContactFieldValue.contact_id,ContactFieldDefinition.key,ContactFieldValue.value_text).join(ContactFieldDefinition,ContactFieldDefinition.id==ContactFieldValue.field_id).where(ContactFieldValue.contact_id.in_(contact_ids))).all();result={}
+    for cid,key,value in rows:result.setdefault(cid,{})[key]=value or ""
+    return result
+
+def whatsapp_system_values(contact):return {"name":contact.name or contact.wa_id,"phone":contact.wa_id,"wa_id":contact.wa_id}
+def whatsapp_audience(db,wid,phone_id,kind,ids,spec=None):
+    q=select(Contact,Conversation).join(Conversation,Conversation.contact_id==Contact.id).where(Contact.workspace_id==wid,Conversation.phone_number_id==phone_id,Contact.archived_at.is_(None),Contact.blocked_at.is_(None))
+    if kind=="selected":
+        if not ids:return []
+        q=q.where(Contact.id.in_(ids))
+    elif kind not in ("all","filtered"):raise HTTPException(400,"audience_type must be all, selected or filtered")
+    rows=db.execute(q.order_by(Contact.id)).all()
+    if kind!="filtered" or not spec or not spec.rules:return rows
+    fv=whatsapp_field_values(db,[x.id for x,_ in rows]);out=[]
+    for contact,conv in rows:
+        values=whatsapp_system_values(contact);values.update(fv.get(contact.id,{}));checks=[_matches(values.get(rule.field,""),rule.operator,rule.value) for rule in spec.rules]
+        if all(checks) if spec.logic.lower()=="and" else any(checks):out.append((contact,conv))
+    return out
+
+def whatsapp_render(text,contact,fields):
+    values=whatsapp_system_values(contact);values.update(fields);return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),text)
+
 def get_broadcast(db,broadcast_id):
     b=db.get(Broadcast,broadcast_id)
     if not b:raise HTTPException(404,"Broadcast not found")
@@ -119,15 +150,32 @@ def telegram_audience_preview(body:AudiencePreviewIn,db:Session=Depends(get_db),
     wid=workspace(db,body.bot_id);rows=audience(db,wid,body.bot_id,"filtered",[],body.audience_filter)
     return {"count":len(rows),"contacts":[{"id":c.id,"name":_system_values(c)["name"],"username":c.username,"telegram_user_id":c.telegram_user_id} for c,_ in rows[:100]]}
 
+@router.get("/whatsapp/fields")
+def whatsapp_fields(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=whatsapp_workspace(db,phone_number_id);custom=db.execute(select(ContactFieldDefinition.key,ContactFieldDefinition.label).where(ContactFieldDefinition.workspace_id==wid,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order,ContactFieldDefinition.label)).all();system=[{"key":"name","label":"Name"},{"key":"phone","label":"Phone number"},{"key":"wa_id","label":"WhatsApp ID"}];seen={x["key"] for x in system};return system+[{"key":k,"label":l} for k,l in custom if k not in seen]
+@router.get("/whatsapp/audience")
+def whatsapp_audience_endpoint(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=whatsapp_workspace(db,phone_number_id);rows=whatsapp_audience(db,wid,phone_number_id,"all",[]);return [{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows]
+@router.post("/whatsapp/audience-preview")
+def whatsapp_audience_preview(body:WhatsAppAudiencePreviewIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=whatsapp_workspace(db,body.phone_number_id);rows=whatsapp_audience(db,wid,body.phone_number_id,"filtered",[],body.audience_filter);return {"count":len(rows),"contacts":[{"id":x.id,"name":x.name or x.wa_id,"wa_id":x.wa_id} for x,_ in rows[:100]]}
+
 @router.post("")
 def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=workspace(db,body.channel_account_id)
-    if body.channel!="telegram":raise HTTPException(400,"Telegram is the first supported broadcast channel")
-    bot=db.get(TelegramBot,body.channel_account_id)
-    if not bot or bot.workspace_id!=wid or not bot.active:raise HTTPException(400,"Select an active Telegram bot")
-    b=Broadcast(workspace_id=wid,channel="telegram",channel_account_id=bot.id,name=body.name.strip(),message_text=body.message_text,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
-    rows=audience(db,wid,bot.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[c.id for c,_ in rows])
-    for c,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=c.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=" ".join(x for x in [c.first_name,c.last_name] if x).strip() or c.username,rendered_text=render(body.message_text,c,fv.get(c.id,{})),status="pending",created_at=now(),updated_at=now()))
+    if body.channel=="telegram":
+        wid=workspace(db,body.channel_account_id);account=db.get(TelegramBot,body.channel_account_id)
+        if not account or account.workspace_id!=wid or not account.active:raise HTTPException(400,"Select an active Telegram bot")
+    elif body.channel=="whatsapp":
+        wid=whatsapp_workspace(db,body.channel_account_id);account=db.get(WhatsAppPhoneNumber,body.channel_account_id)
+        if not account or not account.active:raise HTTPException(400,"Select an active WhatsApp connection")
+    else:raise HTTPException(400,"Unsupported broadcast channel")
+    b=Broadcast(workspace_id=wid,channel=body.channel,channel_account_id=account.id,name=body.name.strip(),message_text=body.message_text,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
+    if body.channel=="telegram":
+        rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
+        for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=_system_values(x)["name"],rendered_text=render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
+    else:
+        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+        for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=whatsapp_render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
 @router.put("/{broadcast_id}")
 def update(broadcast_id:int,body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_manager)):
