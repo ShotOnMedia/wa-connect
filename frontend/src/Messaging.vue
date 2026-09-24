@@ -27,8 +27,7 @@ onBeforeUnmount(()=>api.setFlowChannel('whatsapp'))
     </div>
   </header>
 
-  <div v-if="view==='broadcasts'&&channel==='telegram'" class="embedded"><Broadcasts/></div>
-  <div v-else-if="view==='broadcasts'" class="coming"><span class="dot wa">W</span><div><strong>WhatsApp Broadcasts</strong><p>The shared broadcast workspace is ready; WhatsApp delivery will be connected next.</p></div></div>
+  <div v-if="view==='broadcasts'" class="embedded" :key="'broadcasts-'+channel"><Broadcasts :channel="channel"/></div>
 
   <div v-else-if="view==='campaigns'" class="coming"><span :class="['dot',channel==='telegram'?'tg':'wa']">{{channel==='telegram'?'T':'W'}}</span><div><strong>{{channel==='telegram'?'Telegram':'WhatsApp'}} Campaigns</strong><p>The campaign workspace is reserved for the new multi-message campaign engine.</p></div></div>
 
