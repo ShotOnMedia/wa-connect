@@ -1,11 +1,11 @@
 """Shared multi-message campaign foundation.
 
 Revision ID: 0023_msg_campaigns
-Revises: 0022_broadcast_templates
+Revises: 0024_bcast_audience_validation
 """
 from alembic import op
 import sqlalchemy as sa
-revision="0023_msg_campaigns";down_revision="0022_broadcast_templates";branch_labels=None;depends_on=None
+revision="0023_msg_campaigns";down_revision="0024_bcast_audience_validation";branch_labels=None;depends_on=None
 
 def upgrade():
     op.create_table("messaging_campaigns",
