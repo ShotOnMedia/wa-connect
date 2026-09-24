@@ -12,7 +12,7 @@ from app.models import Workspace,WhatsAppPhoneNumber,WhatsAppAccount,Contact,Con
 from app.telegram_models import TelegramBot,TelegramContact,TelegramConversation,TelegramContactFieldValue
 from app.models import ContactFieldDefinition
 from app.services.telegram import TelegramError,send_text,send_media
-from app.services.whatsapp import send_text_message,send_media_message,list_message_templates,send_template_message
+from app.services.whatsapp import WhatsAppError,send_text_message,send_media_message,list_message_templates,send_template_message
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -164,7 +164,12 @@ async def whatsapp_templates(phone_number_id:int,db:Session=Depends(get_db),user
     token=phone.access_token or settings.meta_access_token
     if not token:raise HTTPException(503,"No WhatsApp access token configured")
     account=db.get(WhatsAppAccount,phone.whatsapp_account_id)
-    rows=await list_message_templates(account.waba_id,token)
+    try:rows=await list_message_templates(account.waba_id,token)
+    except WhatsAppError as exc:
+        message=str(exc)
+        if "code\\\":190" in message or "validating access token" in message.lower() or "session has expired" in message.lower():
+            raise HTTPException(401,"WhatsApp connection needs to be reconnected — the Meta access token has expired or is invalid") from exc
+        raise HTTPException(502,f"Meta could not load WhatsApp templates: {message}") from exc
     return [x for x in rows if str(x.get("status","")).upper()=="APPROVED"]
 
 @router.get("/whatsapp/fields")
