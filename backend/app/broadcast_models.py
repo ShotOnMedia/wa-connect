@@ -44,6 +44,7 @@ class BroadcastRecipient(Base):
     destination:Mapped[str]=mapped_column(String(100),nullable=False)
     display_name:Mapped[str|None]=mapped_column(String(200),nullable=True)
     rendered_text:Mapped[str]=mapped_column(Text,nullable=False)
+    provider_payload_json:Mapped[str|None]=mapped_column(Text,nullable=True)
     status:Mapped[str]=mapped_column(String(20),nullable=False,default="pending",index=True)
     provider_message_id:Mapped[str|None]=mapped_column(String(100),nullable=True)
     attempts:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
