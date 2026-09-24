@@ -12,7 +12,7 @@ from app.models import Workspace,WhatsAppPhoneNumber,WhatsAppAccount,Contact,Con
 from app.telegram_models import TelegramBot,TelegramContact,TelegramConversation,TelegramContactFieldValue
 from app.models import ContactFieldDefinition
 from app.services.telegram import TelegramError,send_text,send_media
-from app.services.whatsapp import send_text_message,send_media_message
+from app.services.whatsapp import send_text_message,send_media_message,list_message_templates,send_template_message
 
 router=APIRouter(prefix="/broadcasts",tags=["Broadcasts"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -38,7 +38,7 @@ def workspace(db, bot_id=None):
     if wid is None:raise HTTPException(400,"No active workspace")
     return wid
 def out(b):
-    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"audience_filter":json.loads(b.audience_filter_json) if b.audience_filter_json else None,"audience_segment_id":b.audience_segment_id,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"created_at":b.created_at,"updated_at":b.updated_at}
+    return {"id":b.id,"name":b.name,"channel":b.channel,"channel_account_id":b.channel_account_id,"message_text":b.message_text,"message_mode":b.message_mode,"provider_template":json.loads(b.provider_template_json) if b.provider_template_json else None,"parse_mode":b.parse_mode,"media_url":b.media_url,"media_type":b.media_type,"stagger_seconds":b.stagger_seconds,"audience_type":b.audience_type,"audience_filter":json.loads(b.audience_filter_json) if b.audience_filter_json else None,"audience_segment_id":b.audience_segment_id,"status":b.status,"scheduled_at":b.scheduled_at,"started_at":b.started_at,"completed_at":b.completed_at,"total_recipients":b.total_recipients,"sent_count":b.sent_count,"failed_count":b.failed_count,"created_at":b.created_at,"updated_at":b.updated_at}
 def render(text,contact,fields):
     values={"name":" ".join(x for x in [contact.first_name,contact.last_name] if x).strip() or contact.username or str(contact.telegram_user_id),"first_name":contact.first_name or "","last_name":contact.last_name or "","username":contact.username or "","subscriber_id":str(contact.telegram_user_id)}
     values.update(fields)
@@ -86,8 +86,9 @@ def whatsapp_field_values(db,contact_ids):
     return result
 
 def whatsapp_system_values(contact):return {"name":contact.name or contact.wa_id,"phone":contact.wa_id,"wa_id":contact.wa_id}
-def whatsapp_audience(db,wid,phone_id,kind,ids,spec=None):
-    q=select(Contact,Conversation).join(Conversation,Conversation.contact_id==Contact.id).where(Contact.workspace_id==wid,Conversation.phone_number_id==phone_id,Contact.archived_at.is_(None),Contact.blocked_at.is_(None),Conversation.service_window_expires_at.is_not(None),Conversation.service_window_expires_at>now())
+def whatsapp_audience(db,wid,phone_id,kind,ids,spec=None,require_open_window=True):
+    q=select(Contact,Conversation).join(Conversation,Conversation.contact_id==Contact.id).where(Contact.workspace_id==wid,Conversation.phone_number_id==phone_id,Contact.archived_at.is_(None),Contact.blocked_at.is_(None))
+    if require_open_window:q=q.where(Conversation.service_window_expires_at.is_not(None),Conversation.service_window_expires_at>now())
     if kind=="selected":
         if not ids:return []
         q=q.where(Contact.id.in_(ids))
@@ -150,6 +151,16 @@ def telegram_audience_preview(body:AudiencePreviewIn,db:Session=Depends(get_db),
     wid=workspace(db,body.bot_id);rows=audience(db,wid,body.bot_id,"filtered",[],body.audience_filter)
     return {"count":len(rows),"contacts":[{"id":c.id,"name":_system_values(c)["name"],"username":c.username,"telegram_user_id":c.telegram_user_id} for c,_ in rows[:100]]}
 
+@router.get("/whatsapp/templates")
+async def whatsapp_templates(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    whatsapp_workspace(db,phone_number_id);phone=db.get(WhatsAppPhoneNumber,phone_number_id)
+    from app.core.config import settings
+    token=phone.access_token or settings.meta_access_token
+    if not token:raise HTTPException(503,"No WhatsApp access token configured")
+    account=db.get(WhatsAppAccount,phone.whatsapp_account_id)
+    rows=await list_message_templates(account.waba_id,token)
+    return [x for x in rows if str(x.get("status","")).upper()=="APPROVED"]
+
 @router.get("/whatsapp/fields")
 def whatsapp_fields(phone_number_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=whatsapp_workspace(db,phone_number_id);custom=db.execute(select(ContactFieldDefinition.key,ContactFieldDefinition.label).where(ContactFieldDefinition.workspace_id==wid,ContactFieldDefinition.active.is_(True)).order_by(ContactFieldDefinition.sort_order,ContactFieldDefinition.label)).all();system=[{"key":"name","label":"Name"},{"key":"phone","label":"Phone number"},{"key":"wa_id","label":"WhatsApp ID"}];seen={x["key"] for x in system};return system+[{"key":k,"label":l} for k,l in custom if k not in seen]
@@ -169,12 +180,12 @@ def create(body:BroadcastIn,db:Session=Depends(get_db),user=Depends(require_mana
         wid=whatsapp_workspace(db,body.channel_account_id);account=db.get(WhatsAppPhoneNumber,body.channel_account_id)
         if not account or not account.active:raise HTTPException(400,"Select an active WhatsApp connection")
     else:raise HTTPException(400,"Unsupported broadcast channel")
-    b=Broadcast(workspace_id=wid,channel=body.channel,channel_account_id=account.id,name=body.name.strip(),message_text=body.message_text,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
+    b=Broadcast(workspace_id=wid,channel=body.channel,channel_account_id=account.id,name=body.name.strip(),message_text=body.message_text,message_mode=body.message_mode,provider_template_json=json.dumps(body.provider_template) if body.provider_template else None,parse_mode=body.parse_mode,media_url=body.media_url,media_type=body.media_type,stagger_seconds=body.stagger_seconds,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter.model_dump()) if body.audience_filter else None,audience_segment_id=body.audience_segment_id if body.audience_type=="filtered" else None,status="draft",scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now());db.add(b);db.flush()
     if body.channel=="telegram":
         rows=audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=field_values(db,[x.id for x,_ in rows])
         for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=_system_values(x)["name"],rendered_text=render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
     else:
-        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter);fv=whatsapp_field_values(db,[x.id for x,_ in rows])
+        rows=whatsapp_audience(db,wid,account.id,body.audience_type,body.contact_ids,body.audience_filter,body.message_mode!="template");fv=whatsapp_field_values(db,[x.id for x,_ in rows])
         for x,conv in rows:db.add(BroadcastRecipient(broadcast_id=b.id,channel_contact_id=x.id,conversation_id=conv.id,destination=x.wa_id,display_name=x.name or x.wa_id,rendered_text=whatsapp_render(body.message_text,x,fv.get(x.id,{})),status="pending",created_at=now(),updated_at=now()))
     b.total_recipients=len(rows);db.commit();db.refresh(b);return out(b)
 @router.put("/{broadcast_id}")
