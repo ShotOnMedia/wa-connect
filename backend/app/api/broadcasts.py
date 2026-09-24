@@ -107,6 +107,28 @@ def render_provider_payload(value,values):
     if isinstance(value,dict):return {k:render_provider_payload(v,values) for k,v in value.items()}
     return value
 
+_TOKEN_RE=re.compile(r"%([a-zA-Z0-9_.-]+)%")
+def unresolved_provider_tokens(value,path=""):
+    issues=[]
+    if isinstance(value,str):
+        for m in _TOKEN_RE.finditer(value):issues.append({"path":path or "value","token":m.group(0),"field":m.group(1)})
+    elif isinstance(value,list):
+        for i,item in enumerate(value):issues.extend(unresolved_provider_tokens(item,f"{path}[{i}]" if path else f"[{i}]"))
+    elif isinstance(value,dict):
+        for key,item in value.items():issues.extend(unresolved_provider_tokens(item,f"{path}.{key}" if path else key))
+    return issues
+
+def validate_whatsapp_template_recipients(recipients):
+    invalid=[]
+    for r in recipients:
+        if not r.provider_payload_json:continue
+        issues=unresolved_provider_tokens(json.loads(r.provider_payload_json))
+        if issues:invalid.append({"recipient_id":r.id,"contact_id":r.channel_contact_id,"name":r.display_name,"destination":r.destination,"issues":issues})
+    if invalid:
+        fields=sorted({x["field"] for row in invalid for x in row["issues"]})
+        sample=", ".join((row["name"] or row["destination"]) for row in invalid[:5]);more=f" and {len(invalid)-5} more" if len(invalid)>5 else ""
+        raise HTTPException(422,detail={"code":"unresolved_template_fields","message":f"WhatsApp template has unresolved recipient fields: {', '.join('%'+x+'%' for x in fields)}. Affected recipients: {sample}{more}.","fields":fields,"affected_recipients":len(invalid),"recipients":invalid[:25]})
+
 def whatsapp_render(text,contact,fields):
     values=whatsapp_system_values(contact);values.update(fields);return re.sub(r"%([a-zA-Z0-9_.-]+)%",lambda m:str(values.get(m.group(1),m.group(0))),text)
 
@@ -237,6 +259,7 @@ def detail(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_mana
 def queue(broadcast_id:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     b=get_broadcast(db,broadcast_id)
     if b.status not in ("draft","scheduled"):raise HTTPException(409,"Broadcast cannot be queued from its current state")
+    if b.channel=="whatsapp" and b.message_mode=="template":validate_whatsapp_template_recipients(db.scalars(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id)).all())
     if not b.total_recipients:raise HTTPException(400,"Broadcast has no recipients")
     b.status="scheduled" if b.scheduled_at and b.scheduled_at>now() else "queued";b.updated_at=now();db.commit();db.refresh(b);return out(b)
 @router.post("/{broadcast_id}/pause")
@@ -264,6 +287,7 @@ async def test(broadcast_id:int,body:TestIn,db:Session=Depends(get_db),user=Depe
     b=get_broadcast(db,broadcast_id)
     r=db.scalar(select(BroadcastRecipient).where(BroadcastRecipient.broadcast_id==b.id,BroadcastRecipient.channel_contact_id==body.contact_id))
     if not r:raise HTTPException(404,"Recipient is not in this broadcast audience")
+    if b.channel=="whatsapp" and b.message_mode=="template":validate_whatsapp_template_recipients([r])
     if b.channel=="telegram":
         bot=db.get(TelegramBot,b.channel_account_id);result=await (send_media(bot.access_token,int(r.destination),b.media_type,b.media_url,r.rendered_text,b.parse_mode) if b.media_url else send_text(bot.access_token,int(r.destination),r.rendered_text,b.parse_mode));return {"ok":True,"provider_message_id":result.get("message_id")}
     phone=db.get(WhatsAppPhoneNumber,b.channel_account_id)
