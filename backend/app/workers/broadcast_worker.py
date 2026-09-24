@@ -60,6 +60,9 @@ async def process_one():
                 if not token:raise RuntimeError("No WhatsApp access token configured")
                 phone_number_id=account.phone_number_id;destination=recipient.destination;media_type=b.media_type;media_url=b.media_url;rendered_text=recipient.rendered_text;db.commit()
                 
+                if b.message_mode!="template":
+                    conv=db.get(Conversation,recipient.conversation_id)
+                    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise RuntimeError("WhatsApp service window has closed; an approved template message is required")
                 if b.message_mode=="template":
                     snap=json.loads(b.provider_template_json or "{}");components=json.loads(recipient.provider_payload_json) if recipient.provider_payload_json else (snap.get("components_payload") or [])
                     result=await send_template_message(phone_number_id,token,destination,snap["name"],snap["language"],components)
