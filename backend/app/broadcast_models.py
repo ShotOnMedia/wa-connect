@@ -12,6 +12,8 @@ class Broadcast(Base):
     channel_account_id:Mapped[int]=mapped_column(BigInteger,nullable=False,index=True)
     name:Mapped[str]=mapped_column(String(150),nullable=False)
     message_text:Mapped[str]=mapped_column(Text,nullable=False)
+    message_mode:Mapped[str]=mapped_column(String(20),nullable=False,default="freeform")
+    provider_template_json:Mapped[str|None]=mapped_column(Text,nullable=True)
     parse_mode:Mapped[str]=mapped_column(String(20),nullable=False,default="HTML")
     media_url:Mapped[str|None]=mapped_column(Text,nullable=True)
     media_type:Mapped[str|None]=mapped_column(String(20),nullable=True)
