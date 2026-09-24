@@ -22,7 +22,7 @@ def utc_naive(value):
 class AudienceRule(BaseModel):field:str;operator:str="equals";value:str=""
 class AudienceFilter(BaseModel):logic:str="and";rules:list[AudienceRule]=Field(default_factory=list)
 class BroadcastIn(BaseModel):
-    name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);audience_filter:AudienceFilter|None=None;audience_segment_id:int|None=None;scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
+    name:str=Field(min_length=1,max_length=150);channel:str="telegram";channel_account_id:int;message_text:str=Field(min_length=1,max_length=4096);message_mode:str="freeform";provider_template:dict|None=None;audience_type:str="all";contact_ids:list[int]=Field(default_factory=list);audience_filter:AudienceFilter|None=None;audience_segment_id:int|None=None;scheduled_at:datetime|None=None;parse_mode:str="HTML";media_url:str|None=None;media_type:str|None=None;stagger_seconds:float=Field(default=0.05,ge=0.05,le=60)
 class AudiencePreviewIn(BaseModel):bot_id:int;audience_filter:AudienceFilter
 class WhatsAppAudiencePreviewIn(BaseModel):phone_number_id:int;audience_filter:AudienceFilter;message_mode:str="freeform"
 class TestIn(BaseModel):contact_id:int
@@ -264,8 +264,11 @@ async def test(broadcast_id:int,body:TestIn,db:Session=Depends(get_db),user=Depe
     phone=db.get(WhatsAppPhoneNumber,b.channel_account_id)
     if not phone or not phone.active:raise HTTPException(400,"WhatsApp connection is unavailable")
     conv=db.get(Conversation,r.conversation_id)
-    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise HTTPException(409,"This contact is outside the WhatsApp service window; an approved template message is required")
+    if b.message_mode!="template" and (not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now()):raise HTTPException(409,"This contact is outside the WhatsApp service window; an approved template message is required")
     from app.core.config import settings
     token=phone.access_token or settings.meta_access_token
     if not token:raise HTTPException(503,"No WhatsApp access token configured")
-    result=await (send_media_message(phone.phone_number_id,token,r.destination,b.media_type,b.media_url,r.rendered_text) if b.media_url else send_text_message(phone.phone_number_id,token,r.destination,r.rendered_text));return {"ok":True,"provider_message_id":((result.get("messages") or [{}])[0].get("id"))}
+    if b.message_mode=="template":
+        snap=json.loads(b.provider_template_json or "{}");components=json.loads(r.provider_payload_json) if r.provider_payload_json else (snap.get("components_payload") or []);result=await send_template_message(phone.phone_number_id,token,r.destination,snap["name"],snap["language"],components)
+    else:result=await (send_media_message(phone.phone_number_id,token,r.destination,b.media_type,b.media_url,r.rendered_text) if b.media_url else send_text_message(phone.phone_number_id,token,r.destination,r.rendered_text))
+    return {"ok":True,"provider_message_id":((result.get("messages") or [{}])[0].get("id"))}
