@@ -23,6 +23,7 @@ class MessagingCampaign(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
     updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
     steps:Mapped[list["MessagingCampaignStep"]]=relationship(back_populates="campaign",cascade="all, delete-orphan",order_by="MessagingCampaignStep.position")
+    recipients:Mapped[list["MessagingCampaignRecipient"]]=relationship(back_populates="campaign",cascade="all, delete-orphan")
 
 class MessagingCampaignStep(Base):
     __tablename__="messaging_campaign_steps"
@@ -41,3 +42,47 @@ class MessagingCampaignStep(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
     updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
     campaign:Mapped[MessagingCampaign]=relationship(back_populates="steps")
+
+
+class MessagingCampaignRecipient(Base):
+    __tablename__="messaging_campaign_recipients"
+    __table_args__=(UniqueConstraint("campaign_id","channel_contact_id",name="uq_msg_campaign_recipient"),Index("ix_msg_campaign_recipient_status","campaign_id","status"),)
+    id:Mapped[int]=mapped_column(BigInteger,primary_key=True,autoincrement=True)
+    campaign_id:Mapped[int]=mapped_column(ForeignKey("messaging_campaigns.id",ondelete="CASCADE"),nullable=False,index=True)
+    channel_contact_id:Mapped[int]=mapped_column(BigInteger,nullable=False,index=True)
+    conversation_id:Mapped[int]=mapped_column(BigInteger,nullable=False,index=True)
+    destination:Mapped[str]=mapped_column(String(100),nullable=False)
+    display_name:Mapped[str|None]=mapped_column(String(200),nullable=True)
+    field_values_json:Mapped[str|None]=mapped_column(Text,nullable=True)
+    status:Mapped[str]=mapped_column(String(20),nullable=False,default="pending",index=True)
+    current_step_position:Mapped[int]=mapped_column(Integer,nullable=False,default=1)
+    started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    completed_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    failed_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    last_error:Mapped[str|None]=mapped_column(Text,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
+    campaign:Mapped[MessagingCampaign]=relationship(back_populates="recipients")
+    deliveries:Mapped[list["MessagingCampaignDelivery"]]=relationship(back_populates="recipient",cascade="all, delete-orphan")
+
+class MessagingCampaignDelivery(Base):
+    __tablename__="messaging_campaign_deliveries"
+    __table_args__=(UniqueConstraint("recipient_id","step_id",name="uq_msg_campaign_recipient_step"),Index("ix_msg_campaign_delivery_due","status","due_at"),)
+    id:Mapped[int]=mapped_column(BigInteger,primary_key=True,autoincrement=True)
+    campaign_id:Mapped[int]=mapped_column(ForeignKey("messaging_campaigns.id",ondelete="CASCADE"),nullable=False,index=True)
+    recipient_id:Mapped[int]=mapped_column(ForeignKey("messaging_campaign_recipients.id",ondelete="CASCADE"),nullable=False,index=True)
+    step_id:Mapped[int]=mapped_column(ForeignKey("messaging_campaign_steps.id",ondelete="CASCADE"),nullable=False,index=True)
+    step_position:Mapped[int]=mapped_column(Integer,nullable=False)
+    rendered_text:Mapped[str]=mapped_column(Text,nullable=False)
+    media_url:Mapped[str|None]=mapped_column(Text,nullable=True)
+    media_type:Mapped[str|None]=mapped_column(String(20),nullable=True)
+    parse_mode:Mapped[str]=mapped_column(String(20),nullable=False,default="HTML")
+    status:Mapped[str]=mapped_column(String(20),nullable=False,default="pending",index=True)
+    due_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,index=True)
+    attempts:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    provider_message_id:Mapped[str|None]=mapped_column(String(255),nullable=True)
+    sent_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    last_error:Mapped[str|None]=mapped_column(Text,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
+    recipient:Mapped[MessagingCampaignRecipient]=relationship(back_populates="deliveries")
