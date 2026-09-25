@@ -13,6 +13,12 @@ from app.api.broadcasts import AudienceFilter,audience,field_values,_system_valu
 
 router=APIRouter(prefix="/messaging-campaigns",tags=["Messaging Campaigns"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
+def utc_naive(value):
+    if value is None:return None
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+def token_fields(text):
+    import re
+    return [m.group(1) for m in re.finditer(r"%([a-zA-Z0-9_.-]+)%",text or "")]
 
 class CampaignIn(BaseModel):
     name:str=Field(min_length=1,max_length=150);channel:str;channel_account_id:int;description:str|None=None
@@ -49,7 +55,7 @@ def listing(channel:str|None=None,db:Session=Depends(get_db),user=Depends(requir
 @router.post("")
 def create(body:CampaignIn,db:Session=Depends(get_db),user=Depends(require_manager)):
     wid=workspace_for(db,body.channel,body.channel_account_id)
-    c=MessagingCampaign(workspace_id=wid,channel=body.channel,channel_account_id=body.channel_account_id,name=body.name.strip(),description=body.description,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter) if body.audience_filter else None,audience_segment_id=body.audience_segment_id,scheduled_at=body.scheduled_at,created_by_user_id=user.id,created_at=now(),updated_at=now())
+    c=MessagingCampaign(workspace_id=wid,channel=body.channel,channel_account_id=body.channel_account_id,name=body.name.strip(),description=body.description,audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter) if body.audience_filter else None,audience_segment_id=body.audience_segment_id,scheduled_at=utc_naive(body.scheduled_at),created_by_user_id=user.id,created_at=now(),updated_at=now())
     db.add(c);db.commit();db.refresh(c);return out(c,True)
 @router.get("/{cid}")
 def detail(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):return out(get(db,cid),True)
@@ -58,7 +64,7 @@ def update(cid:int,body:CampaignIn,db:Session=Depends(get_db),user=Depends(requi
     c=get(db,cid)
     if c.status!="draft":raise HTTPException(409,"Only draft campaigns can be edited")
     wid=workspace_for(db,body.channel,body.channel_account_id)
-    c.workspace_id=wid;c.channel=body.channel;c.channel_account_id=body.channel_account_id;c.name=body.name.strip();c.description=body.description;c.audience_type=body.audience_type;c.audience_filter_json=json.dumps(body.audience_filter) if body.audience_filter else None;c.audience_segment_id=body.audience_segment_id;c.scheduled_at=body.scheduled_at;c.updated_at=now()
+    c.workspace_id=wid;c.channel=body.channel;c.channel_account_id=body.channel_account_id;c.name=body.name.strip();c.description=body.description;c.audience_type=body.audience_type;c.audience_filter_json=json.dumps(body.audience_filter) if body.audience_filter else None;c.audience_segment_id=body.audience_segment_id;c.scheduled_at=utc_naive(body.scheduled_at);c.updated_at=now()
     db.commit();db.refresh(c);return out(c,True)
 @router.delete("/{cid}",status_code=204)
 def delete(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
@@ -108,6 +114,29 @@ def _campaign_runtime_out(db,c):
 def runtime(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     return _campaign_runtime_out(db,get(db,cid))
 
+@router.get("/{cid}/audience-preview")
+def campaign_audience_preview(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    c=get(db,cid)
+    if c.channel!="telegram":raise HTTPException(422,"Campaign audience preview is currently enabled for Telegram first")
+    spec=AudienceFilter.model_validate(json.loads(c.audience_filter_json)) if c.audience_filter_json else None
+    rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
+    values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    required=[]
+    for step in c.steps:
+        for key in token_fields(step.message_text):
+            if key not in required:required.append(key)
+    report=[];ready=0
+    for contact,conv in rows:
+        fields=values_by_contact.get(contact.id,{})
+        values=_system_values(contact);values.update(fields)
+        missing=[key for key in required if not str(values.get(key,"")).strip()]
+        reasons=[{"code":"missing_field","field":key,"message":f"Missing value for %{key}%"} for key in missing]
+        status="excluded" if reasons else "ready"
+        if status=="ready":ready+=1
+        report.append({"contact_id":contact.id,"display_name":values["name"],"destination":str(conv.chat_id),"status":status,"reasons":reasons})
+    return {"evaluated":len(report),"ready":ready,"excluded":len(report)-ready,"required_fields":required,"contacts":report}
+
+
 @router.post("/{cid}/launch")
 def launch(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     c=get(db,cid)
@@ -120,11 +149,20 @@ def launch(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
     if not rows:raise HTTPException(422,"No eligible Telegram recipients matched this campaign audience")
     values_by_contact=field_values(db,[contact.id for contact,_ in rows])
-    launch_at=c.scheduled_at if c.scheduled_at and c.scheduled_at>now() else now()
-    first=c.steps[0]
+    required=[]
+    for step in c.steps:
+        for key in token_fields(step.message_text):
+            if key not in required:required.append(key)
+    eligible=[]
     for contact,conv in rows:
         fields=values_by_contact.get(contact.id,{})
         values=_system_values(contact);values.update(fields)
+        if any(not str(values.get(key,"")).strip() for key in required):continue
+        eligible.append((contact,conv,fields,values))
+    if not eligible:raise HTTPException(422,"No recipients passed campaign audience validation")
+    launch_at=c.scheduled_at if c.scheduled_at and c.scheduled_at>now() else now()
+    first=c.steps[0]
+    for contact,conv,fields,values in eligible:
         recipient=MessagingCampaignRecipient(campaign_id=c.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=values["name"],field_values_json=json.dumps(values),status="pending",current_step_position=1,created_at=now(),updated_at=now())
         db.add(recipient);db.flush()
         rendered=render(first.message_text,contact,fields)
