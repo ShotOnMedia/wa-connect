@@ -133,7 +133,8 @@ def campaign_audience_preview(cid:int,db:Session=Depends(get_db),user=Depends(re
         reasons=[{"code":"missing_field","field":key,"message":f"Missing value for %{key}%"} for key in missing]
         status="excluded" if reasons else "ready"
         if status=="ready":ready+=1
-        preview_steps=[{"id":step.id,"position":step.position,"name":step.name,"delay_seconds":step.delay_seconds,"rendered_text":render(step.message_text,contact,fields),"media_url":step.media_url,"media_type":step.media_type,"parse_mode":step.parse_mode} for step in c.steps]\n        report.append({"contact_id":contact.id,"display_name":values["name"],"destination":str(conv.chat_id),"status":status,"reasons":reasons,"preview_steps":preview_steps})
+        preview_steps=[{"id":step.id,"position":step.position,"name":step.name,"delay_seconds":step.delay_seconds,"rendered_text":render(step.message_text,contact,fields),"media_url":step.media_url,"media_type":step.media_type,"parse_mode":step.parse_mode} for step in c.steps]
+        report.append({"contact_id":contact.id,"display_name":values["name"],"destination":str(conv.chat_id),"status":status,"reasons":reasons,"preview_steps":preview_steps})
     return {"evaluated":len(report),"ready":ready,"excluded":len(report)-ready,"required_fields":required,"contacts":report}
 
 
