@@ -38,6 +38,19 @@ async function moveStep(s,direction){try{await api.moveMessagingCampaignStep(sel
 async function removeCampaign(c){if(!confirm('Delete campaign “'+c.name+'”?'))return;try{await api.deleteMessagingCampaign(c.id);if(selected.value?.id===c.id)selected.value=null;await load();success.value='Campaign deleted.'}catch(e){error.value=e.message}}
 async function loadAudiencePreview(){if(!selected.value?.id)return;previewLoading.value=true;error.value='';try{audiencePreview.value=await api.campaignAudiencePreview(selected.value.id)}catch(e){error.value=e.message;audiencePreview.value=null}finally{previewLoading.value=false}}
 async function goReview(){builderStage.value=3;await loadAudiencePreview()}
+async function saveReviewDraft(){
+  if(!selected.value?.id)return
+  saving.value=true;error.value='';success.value=''
+  try{
+    const payload={name:form.value.name.trim(),description:form.value.description||null,channel:props.channel,channel_account_id:Number(form.value.channel_account_id),audience_type:form.value.audience_type,audience_filter:form.value.audience_type==='filtered'?form.value.audience_filter:null,scheduled_at:schedulePayload(form.value.scheduled_at)}
+    const saved=await api.updateMessagingCampaign(selected.value.id,payload)
+    selected.value=await api.messagingCampaign(saved.id)
+    form.value.scheduled_at=localInput(selected.value.scheduled_at)
+    campaigns.value=await api.messagingCampaigns(props.channel)
+    success.value='Campaign draft saved.'
+    builder.value=false
+  }catch(e){error.value=e.message}finally{saving.value=false}
+}
 async function runtimeAction(action,campaign=selected.value){if(!campaign)return;error.value='';success.value='';try{if(action==='launch'){const scheduled=form.value.scheduled_at&&form.value.scheduled_at!=='schedule';const verb=scheduled?'Schedule':'Launch';if(!confirm(verb+' “'+campaign.name+'” to '+(audiencePreview.value?.ready??'the validated')+' recipient(s)?'))return;if(campaign.status==='draft'&&campaign.id===selected.value?.id){const payload={name:form.value.name.trim(),description:form.value.description||null,channel:props.channel,channel_account_id:Number(form.value.channel_account_id),audience_type:form.value.audience_type,audience_filter:form.value.audience_type==='filtered'?form.value.audience_filter:null,scheduled_at:scheduled?schedulePayload(form.value.scheduled_at):null};await api.updateMessagingCampaign(campaign.id,payload)}await api.launchMessagingCampaign(campaign.id);success.value=scheduled?'Campaign scheduled.':'Campaign launched.'}else if(action==='pause'){await api.pauseMessagingCampaign(campaign.id);success.value='Campaign paused.'}else if(action==='resume'){await api.resumeMessagingCampaign(campaign.id);success.value='Campaign resumed.'}else if(action==='cancel'){if(!confirm('Cancel “'+campaign.name+'”? Pending messages will not be sent.'))return;await api.cancelMessagingCampaign(campaign.id);success.value='Campaign cancelled.'}await load();if((builder.value||report.value)&&campaign.id){selected.value=await api.messagingCampaign(campaign.id);if(report.value)runtime.value=await api.campaignRuntime(campaign.id)}}catch(e){error.value=e.message}}
 watch(()=>props.channel,()=>{selected.value=null;runtime.value=null;report.value=false;campaignOpen.value=false;stepOpen.value=false;builder.value=false;load()})
 onMounted(load)
@@ -129,7 +142,7 @@ onMounted(load)
       </div>
       <div class="timeline"><div v-for="(s,i) in selected.steps" :key="s.id" class="timeline-row"><b>{{i+1}}</b><div><strong>{{s.name}}</strong><small>{{delayLabel(s.delay_seconds)}}</small><p>{{s.message_text}}</p></div></div></div>
       <div class="runtime-note"><strong>Runtime ready.</strong><span>Launching snapshots the Telegram audience. Each recipient then advances independently through this sequence using the delay after the previous successful message.</span></div>
-      <div class="actions"><button @click="builderStage=2">← Sequence</button><button @click="builder=false">Save draft</button><button v-if="selected.status==='draft'" class="primary" :disabled="previewLoading||!audiencePreview?.ready" @click="runtimeAction('launch')">{{form.scheduled_at&&form.scheduled_at!=='schedule'?'Schedule campaign':'Launch campaign'}}</button><button v-if="selected.status==='running'||selected.status==='scheduled'" @click="runtimeAction('pause')">Pause</button><button v-if="selected.status==='paused'" class="primary" @click="runtimeAction('resume')">Resume</button><button v-if="['running','scheduled','paused'].includes(selected.status)" class="danger" @click="runtimeAction('cancel')">Cancel</button></div>
+      <div class="actions"><button @click="builderStage=2">← Sequence</button><button :disabled="saving" @click="saveReviewDraft">{{saving?'Saving…':'Save draft'}}</button><button v-if="selected.status==='draft'" class="primary" :disabled="previewLoading||!audiencePreview?.ready" @click="runtimeAction('launch')">{{form.scheduled_at&&form.scheduled_at!=='schedule'?'Schedule campaign':'Launch campaign'}}</button><button v-if="selected.status==='running'||selected.status==='scheduled'" @click="runtimeAction('pause')">Pause</button><button v-if="selected.status==='paused'" class="primary" @click="runtimeAction('resume')">Resume</button><button v-if="['running','scheduled','paused'].includes(selected.status)" class="danger" @click="runtimeAction('cancel')">Cancel</button></div>
     </div>
   </template>
 
