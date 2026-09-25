@@ -50,6 +50,19 @@ async function moveStep(s,direction){try{await api.moveMessagingCampaignStep(sel
 async function removeCampaign(c){if(!confirm('Delete campaign “'+c.name+'”?'))return;try{await api.deleteMessagingCampaign(c.id);if(selected.value?.id===c.id)selected.value=null;await load();success.value='Campaign deleted.'}catch(e){error.value=e.message}}
 async function loadAudiencePreview(){if(!selected.value?.id)return;previewLoading.value=true;error.value='';try{audiencePreview.value=await api.campaignAudiencePreview(selected.value.id)}catch(e){error.value=e.message;audiencePreview.value=null}finally{previewLoading.value=false}}
 async function goReview(){builderStage.value=3;await loadAudiencePreview()}
+async function saveDraft(stayOpen=false){
+  if(!selected.value?.id)return
+  saving.value=true;error.value='';success.value=''
+  try{
+    const payload={name:form.value.name.trim(),description:form.value.description||null,channel:props.channel,channel_account_id:Number(form.value.channel_account_id),audience_type:form.value.audience_type,audience_filter:form.value.audience_type==='filtered'?form.value.audience_filter:null,scheduled_at:schedulePayload(form.value.scheduled_at)}
+    const saved=await api.updateMessagingCampaign(selected.value.id,payload)
+    selected.value=await api.messagingCampaign(saved.id)
+    form.value.scheduled_at=localInput(selected.value.scheduled_at)
+    campaigns.value=await api.messagingCampaigns(props.channel)
+    success.value='Campaign draft saved.'
+    if(!stayOpen)builder.value=false
+  }catch(e){error.value=e.message}finally{saving.value=false}
+}
 async function saveReviewDraft(){
   if(!selected.value?.id)return
   saving.value=true;error.value='';success.value=''
@@ -129,7 +142,7 @@ onMounted(load)
         <div v-for="(rule,i) in form.audience_filter.rules" :key="i" class="filter-rule"><select v-model="rule.field"><option v-for="field in fields" :key="field.key" :value="field.key">{{field.label}}</option></select><select v-model="rule.operator"><option v-for="op in filterOperators" :key="op[0]" :value="op[0]">{{op[1]}}</option></select><input v-if="operatorNeedsValue(rule.operator)" v-model="rule.value" placeholder="Value"/><span v-else class="filter-no-value">No value required</span><button type="button" class="danger" @click="removeAudienceRule(i)">×</button></div>
         <button type="button" class="secondary add-rule" @click="addAudienceRule">+ Add rule</button>
       </div>
-      <div class="actions"><button @click="builder=false">Cancel</button><button class="primary" :disabled="saving||!form.name.trim()||!form.channel_account_id" @click="saveCampaign">{{saving?'Saving…':'Save & continue →'}}</button></div>
+      <div class="actions"><button @click="builder=false">Cancel</button><button v-if="selected" :disabled="saving||!form.name.trim()||!form.channel_account_id" @click="saveDraft(true)">{{saving?'Saving…':'Save draft'}}</button><button class="primary" :disabled="saving||!form.name.trim()||!form.channel_account_id" @click="saveCampaign">{{saving?'Saving…':'Save & continue →'}}</button></div>
     </div>
 
     <div v-else-if="builderStage===2 && selected" class="builder-card">
@@ -139,7 +152,7 @@ onMounted(load)
         <div class="step-num">{{i+1}}</div><div class="step-main"><div class="step-head"><strong>{{s.name}}</strong><span>{{delayLabel(s.delay_seconds)}}</span></div><div class="message">{{s.message_text}}</div><small v-if="s.media_url">{{s.media_type}} · {{s.media_url}}</small></div>
         <div class="step-actions"><button :disabled="i===0" @click="moveStep(s,'up')">↑</button><button :disabled="i===selected.steps.length-1" @click="moveStep(s,'down')">↓</button><button @click="editStep(s)">Edit</button><button class="danger" @click="removeStep(s)">Delete</button></div>
       </div>
-      <div class="actions"><button @click="builderStage=1">← Details</button><button class="primary" :disabled="!selected.steps?.length" @click="goReview">Timing & review →</button></div>
+      <div class="actions"><button @click="builderStage=1">← Details</button><button :disabled="saving" @click="saveDraft(true)">{{saving?'Saving…':'Save draft'}}</button><button class="primary" :disabled="!selected.steps?.length" @click="goReview">Timing & review →</button></div>
     </div>
 
     <div v-else-if="builderStage===3 && selected" class="builder-card">
