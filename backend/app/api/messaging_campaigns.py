@@ -9,7 +9,7 @@ from app.core.security import require_manager
 from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep,MessagingCampaignRecipient,MessagingCampaignDelivery
 from app.models import Workspace,WhatsAppAccount,WhatsAppPhoneNumber
 from app.telegram_models import TelegramBot
-from app.api.broadcasts import AudienceFilter,audience,field_values,_system_values,render
+from app.api.broadcasts import AudienceFilter,audience,field_values,_system_values,render,whatsapp_audience,whatsapp_field_values,whatsapp_system_values,whatsapp_render,render_provider_payload,unresolved_provider_tokens
 
 router=APIRouter(prefix="/messaging-campaigns",tags=["Messaging Campaigns"],dependencies=[Depends(require_manager)])
 def now():return datetime.now(UTC).replace(tzinfo=None)
@@ -117,10 +117,17 @@ def runtime(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
 @router.get("/{cid}/audience-preview")
 def campaign_audience_preview(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     c=get(db,cid)
-    if c.channel!="telegram":raise HTTPException(422,"Campaign audience preview is currently enabled for Telegram first")
     spec=AudienceFilter.model_validate(json.loads(c.audience_filter_json)) if c.audience_filter_json else None
-    rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
-    values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    if c.channel=="telegram":
+        rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
+        values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    elif c.channel=="whatsapp":
+        # Campaigns may mix template and free-form steps.  Do not discard
+        # contacts merely because the service window is closed at preview
+        # time; free-form eligibility is checked again when that step sends.
+        rows=whatsapp_audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec,require_open_window=False)
+        values_by_contact=whatsapp_field_values(db,[contact.id for contact,_ in rows])
+    else:raise HTTPException(422,"Unsupported campaign channel")
     required=[]
     for step in c.steps:
         for key in token_fields(step.message_text):
@@ -128,13 +135,24 @@ def campaign_audience_preview(cid:int,db:Session=Depends(get_db),user=Depends(re
     report=[];ready=0
     for contact,conv in rows:
         fields=values_by_contact.get(contact.id,{})
-        values=_system_values(contact);values.update(fields)
+        values=(_system_values(contact) if c.channel=="telegram" else whatsapp_system_values(contact));values.update(fields)
         missing=[key for key in required if not str(values.get(key,"")).strip()]
         reasons=[{"code":"missing_field","field":key,"message":f"Missing value for %{key}%"} for key in missing]
         status="excluded" if reasons else "ready"
+        preview_steps=[]
+        for step in c.steps:
+            rendered=(render(step.message_text,contact,fields) if c.channel=="telegram" else whatsapp_render(step.message_text,contact,fields))
+            provider=json.loads(step.provider_template_json) if step.provider_template_json else None
+            if provider:
+                provider=render_provider_payload(provider,values)
+                issues=unresolved_provider_tokens(provider)
+                for issue in issues:
+                    if not any(x.get("field")==issue["field"] for x in reasons):reasons.append({"code":"missing_field","field":issue["field"],"message":f"Missing value for %{issue['field']}%"})
+            preview_steps.append({"id":step.id,"position":step.position,"name":step.name,"delay_seconds":step.delay_seconds,"message_mode":step.message_mode,"rendered_text":rendered,"provider_template":provider,"media_url":step.media_url,"media_type":step.media_type,"parse_mode":step.parse_mode})
+        status="excluded" if reasons else "ready"
+        destination=str(conv.chat_id) if c.channel=="telegram" else str(contact.wa_id)
         if status=="ready":ready+=1
-        preview_steps=[{"id":step.id,"position":step.position,"name":step.name,"delay_seconds":step.delay_seconds,"rendered_text":render(step.message_text,contact,fields),"media_url":step.media_url,"media_type":step.media_type,"parse_mode":step.parse_mode} for step in c.steps]
-        report.append({"contact_id":contact.id,"display_name":values["name"],"destination":str(conv.chat_id),"status":status,"reasons":reasons,"preview_steps":preview_steps})
+        report.append({"contact_id":contact.id,"display_name":values["name"],"destination":destination,"status":status,"reasons":reasons,"preview_steps":preview_steps})
     return {"evaluated":len(report),"ready":ready,"excluded":len(report)-ready,"required_fields":required,"contacts":report}
 
 
@@ -143,13 +161,19 @@ def launch(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     c=get(db,cid)
     if c.status!="draft":raise HTTPException(409,"Only draft campaigns can be launched")
     if not c.steps:raise HTTPException(422,"Add at least one message before launching")
-    if c.channel!="telegram":raise HTTPException(422,"Campaign runtime is currently enabled for Telegram first")
-    bot=db.get(TelegramBot,c.channel_account_id)
-    if not bot or not bot.active:raise HTTPException(400,"Telegram bot is unavailable")
     spec=AudienceFilter.model_validate(json.loads(c.audience_filter_json)) if c.audience_filter_json else None
-    rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
-    if not rows:raise HTTPException(422,"No eligible Telegram recipients matched this campaign audience")
-    values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    if c.channel=="telegram":
+        account=db.get(TelegramBot,c.channel_account_id)
+        if not account or not account.active:raise HTTPException(400,"Telegram bot is unavailable")
+        rows=audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec)
+        values_by_contact=field_values(db,[contact.id for contact,_ in rows])
+    elif c.channel=="whatsapp":
+        account=db.get(WhatsAppPhoneNumber,c.channel_account_id)
+        if not account or not account.active:raise HTTPException(400,"WhatsApp connection is unavailable")
+        rows=whatsapp_audience(db,c.workspace_id,c.channel_account_id,c.audience_type,[],spec,require_open_window=False)
+        values_by_contact=whatsapp_field_values(db,[contact.id for contact,_ in rows])
+    else:raise HTTPException(422,"Unsupported campaign channel")
+    if not rows:raise HTTPException(422,f"No eligible {c.channel.title()} recipients matched this campaign audience")
     required=[]
     for step in c.steps:
         for key in token_fields(step.message_text):
@@ -157,16 +181,21 @@ def launch(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
     eligible=[]
     for contact,conv in rows:
         fields=values_by_contact.get(contact.id,{})
-        values=_system_values(contact);values.update(fields)
+        values=(_system_values(contact) if c.channel=="telegram" else whatsapp_system_values(contact));values.update(fields)
         if any(not str(values.get(key,"")).strip() for key in required):continue
+        bad_template=False
+        for step in c.steps:
+            if step.provider_template_json and unresolved_provider_tokens(render_provider_payload(json.loads(step.provider_template_json),values)):bad_template=True;break
+        if bad_template:continue
         eligible.append((contact,conv,fields,values))
     if not eligible:raise HTTPException(422,"No recipients passed campaign audience validation")
     launch_at=c.scheduled_at if c.scheduled_at and c.scheduled_at>now() else now()
     first=c.steps[0]
     for contact,conv,fields,values in eligible:
-        recipient=MessagingCampaignRecipient(campaign_id=c.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=str(conv.chat_id),display_name=values["name"],field_values_json=json.dumps(values),status="pending",current_step_position=1,created_at=now(),updated_at=now())
+        destination=str(conv.chat_id) if c.channel=="telegram" else str(contact.wa_id)
+        recipient=MessagingCampaignRecipient(campaign_id=c.id,channel_contact_id=contact.id,conversation_id=conv.id,destination=destination,display_name=values["name"],field_values_json=json.dumps(values),status="pending",current_step_position=1,created_at=now(),updated_at=now())
         db.add(recipient);db.flush()
-        rendered=render(first.message_text,contact,fields)
+        rendered=render(first.message_text,contact,fields) if c.channel=="telegram" else whatsapp_render(first.message_text,contact,fields)
         db.add(MessagingCampaignDelivery(campaign_id=c.id,recipient_id=recipient.id,step_id=first.id,step_position=first.position,rendered_text=rendered,media_url=first.media_url,media_type=first.media_type,parse_mode=first.parse_mode,status="pending",due_at=launch_at+timedelta(seconds=first.delay_seconds),created_at=now(),updated_at=now()))
     c.status="scheduled" if launch_at>now() else "running";c.started_at=None if launch_at>now() else now();c.updated_at=now()
     db.commit();db.refresh(c);return _campaign_runtime_out(db,c)
