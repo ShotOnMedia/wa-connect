@@ -1,11 +1,14 @@
-import asyncio,logging,re
+import asyncio,json,logging,re
 from datetime import datetime,UTC,timedelta
 from sqlalchemy import func,select
 from app.core.database import SessionLocal
 import app.models,app.telegram_models,app.campaign_engine_models
 from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep,MessagingCampaignRecipient,MessagingCampaignDelivery
 from app.telegram_models import TelegramBot,TelegramConversation,TelegramMessage
+from app.models import WhatsAppPhoneNumber,Conversation,Message,MessageDirection,MessageStatus
+from app.core.config import settings
 from app.services.telegram import send_text,send_media
+from app.services.whatsapp import send_text_message,send_media_message,send_template_message
 
 logging.basicConfig(level=logging.INFO);log=logging.getLogger("campaign-worker")
 TOKEN_RE=re.compile(r"%([a-zA-Z0-9_.-]+)%")
@@ -33,21 +36,54 @@ async def process_one():
             db.rollback();d=db.get(MessagingCampaignDelivery,did);c=db.get(MessagingCampaign,cid);r=db.get(MessagingCampaignRecipient,rid)
             if c.status!="running":
                 d.status="pending";d.attempts=max(0,d.attempts-1);d.updated_at=now();db.commit();return True
-            bot=db.get(TelegramBot,c.channel_account_id)
-            if not bot or not bot.active:raise RuntimeError("Telegram bot is unavailable")
-            token=bot.access_token;destination=int(r.destination);text=d.rendered_text;media_url=d.media_url;media_type=d.media_type;parse_mode=d.parse_mode
-            db.commit()
-            result=await (send_media(token,destination,media_type,media_url,text,parse_mode) if media_url else send_text(token,destination,text,parse_mode))
-            mid=str(result["message_id"])
+            step=db.get(MessagingCampaignStep,d.step_id)
+            text=d.rendered_text;media_url=d.media_url;media_type=d.media_type;parse_mode=d.parse_mode
+            if c.channel=="telegram":
+                account=db.get(TelegramBot,c.channel_account_id)
+                if not account or not account.active:raise RuntimeError("Telegram bot is unavailable")
+                token=account.access_token;destination=int(r.destination);db.commit()
+                result=await (send_media(token,destination,media_type,media_url,text,parse_mode) if media_url else send_text(token,destination,text,parse_mode))
+                mid=str(result["message_id"])
+            elif c.channel=="whatsapp":
+                account=db.get(WhatsAppPhoneNumber,c.channel_account_id)
+                if not account or not account.active:raise RuntimeError("WhatsApp connection is unavailable")
+                token=account.access_token or settings.meta_access_token
+                if not token:raise RuntimeError("No WhatsApp access token configured")
+                phone_number_id=account.phone_number_id;destination=r.destination
+                values=json.loads(r.field_values_json or "{}")
+                mode=step.message_mode if step else "freeform"
+                provider=json.loads(step.provider_template_json or "{}") if step else {}
+                def resolve(value):
+                    if isinstance(value,str):return render_values(value,values)
+                    if isinstance(value,list):return [resolve(x) for x in value]
+                    if isinstance(value,dict):return {k:resolve(v) for k,v in value.items()}
+                    return value
+                provider=resolve(provider)
+                if mode!="template":
+                    conv=db.get(Conversation,r.conversation_id)
+                    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise RuntimeError("WhatsApp service window has closed; an approved template message is required for this campaign step")
+                db.commit()
+                if mode=="template":
+                    components=provider.get("components_payload") or []
+                    result=await send_template_message(phone_number_id,token,destination,provider["name"],provider["language"],components)
+                else:
+                    result=await (send_media_message(phone_number_id,token,destination,media_type,media_url,text) if media_url else send_text_message(phone_number_id,token,destination,text))
+                mid=str((result.get("messages") or [{}])[0].get("id") or "")
+            else:raise RuntimeError("Unsupported campaign channel")
             d=db.get(MessagingCampaignDelivery,did);r=db.get(MessagingCampaignRecipient,rid);c=db.get(MessagingCampaign,cid)
             d.status="sent";d.provider_message_id=mid;d.sent_at=now();d.last_error=None;d.updated_at=now()
-            conv=db.get(TelegramConversation,r.conversation_id)
-            if conv:
-                db.add(TelegramMessage(conversation_id=conv.id,telegram_message_id=int(mid),direction="outbound",message_type=d.media_type if d.media_url else "text",body=d.rendered_text,status="sent",telegram_timestamp=now()))
-                conv.last_message_at=now();conv.updated_at=now()
+            if c.channel=="telegram":
+                conv=db.get(TelegramConversation,r.conversation_id)
+                if conv:
+                    db.add(TelegramMessage(conversation_id=conv.id,telegram_message_id=int(mid),direction="outbound",message_type=d.media_type if d.media_url else "text",body=d.rendered_text,status="sent",telegram_timestamp=now()))
+                    conv.last_message_at=now();conv.updated_at=now()
+            else:
+                conv=db.get(Conversation,r.conversation_id)
+                if conv:
+                    db.add(Message(conversation_id=conv.id,meta_message_id=mid or None,direction=MessageDirection.OUTBOUND,message_type=d.media_type if d.media_url else "text",body=d.rendered_text,status=MessageStatus.SENT,whatsapp_timestamp=now()))
+                    conv.last_message_at=now();conv.updated_at=now()
             next_step=db.scalar(select(MessagingCampaignStep).where(MessagingCampaignStep.campaign_id==cid,MessagingCampaignStep.position>d.step_position).order_by(MessagingCampaignStep.position).limit(1))
             if next_step:
-                import json
                 values=json.loads(r.field_values_json or "{}")
                 db.add(MessagingCampaignDelivery(campaign_id=cid,recipient_id=rid,step_id=next_step.id,step_position=next_step.position,rendered_text=render_values(next_step.message_text,values),media_url=next_step.media_url,media_type=next_step.media_type,parse_mode=next_step.parse_mode,status="pending",due_at=d.sent_at+timedelta(seconds=next_step.delay_seconds),created_at=now(),updated_at=now()))
                 r.current_step_position=next_step.position;r.status="running";r.updated_at=now()
