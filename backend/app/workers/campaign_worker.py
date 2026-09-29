@@ -14,13 +14,18 @@ logging.basicConfig(level=logging.INFO);log=logging.getLogger("campaign-worker")
 TOKEN_RE=re.compile(r"%([a-zA-Z0-9_.-]+)%")
 def now():return datetime.now(UTC).replace(tzinfo=None)
 def render_values(text,values):return TOKEN_RE.sub(lambda m:str(values.get(m.group(1),m.group(0))),text or "")
+class PermanentDeliveryError(RuntimeError):pass
 
 def finish_campaign_if_done(db,campaign_id):
     pending=db.scalar(select(func.count()).select_from(MessagingCampaignRecipient).where(MessagingCampaignRecipient.campaign_id==campaign_id,MessagingCampaignRecipient.status.in_(["pending","running"]))) or 0
     if pending:return
     c=db.get(MessagingCampaign,campaign_id)
-    if c and c.status not in ("cancelled","completed"):
-        c.status="completed";c.completed_at=now();c.updated_at=now();db.commit();log.info("Campaign %s completed",campaign_id)
+    if c and c.status not in ("cancelled","completed","completed_with_failures","failed"):
+        total=db.scalar(select(func.count()).select_from(MessagingCampaignRecipient).where(MessagingCampaignRecipient.campaign_id==campaign_id)) or 0
+        failed=db.scalar(select(func.count()).select_from(MessagingCampaignRecipient).where(MessagingCampaignRecipient.campaign_id==campaign_id,MessagingCampaignRecipient.status=="failed")) or 0
+        completed=db.scalar(select(func.count()).select_from(MessagingCampaignRecipient).where(MessagingCampaignRecipient.campaign_id==campaign_id,MessagingCampaignRecipient.status=="completed")) or 0
+        c.status="failed" if total and failed==total else "completed_with_failures" if failed else "completed"
+        c.completed_at=now();c.updated_at=now();db.commit();log.info("Campaign %s finished with status %s (%s completed, %s failed)",campaign_id,c.status,completed,failed)
 
 async def process_one():
     with SessionLocal() as db:
@@ -61,7 +66,7 @@ async def process_one():
                 provider=resolve(provider)
                 if mode!="template":
                     conv=db.get(Conversation,r.conversation_id)
-                    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise RuntimeError("WhatsApp service window has closed; an approved template message is required for this campaign step")
+                    if not conv or not conv.service_window_expires_at or conv.service_window_expires_at<=now():raise PermanentDeliveryError("WhatsApp service window has closed; an approved template message is required for this campaign step")
                 db.commit()
                 if mode=="template":
                     components=provider.get("components_payload") or []
@@ -93,7 +98,8 @@ async def process_one():
         except Exception as exc:
             db.rollback();d=db.get(MessagingCampaignDelivery,did);r=db.get(MessagingCampaignRecipient,rid)
             d.last_error=str(exc)[:4000];d.updated_at=now()
-            if d.attempts<3:
+            permanent=isinstance(exc,PermanentDeliveryError)
+            if not permanent and d.attempts<3:
                 d.status="pending";d.due_at=now()+timedelta(seconds=30)
             else:
                 d.status="failed";r.status="failed";r.failed_at=now();r.last_error=d.last_error;r.updated_at=now()
