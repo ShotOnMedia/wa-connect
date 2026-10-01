@@ -86,3 +86,17 @@ class MessagingCampaignDelivery(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
     updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
     recipient:Mapped[MessagingCampaignRecipient]=relationship(back_populates="deliveries")
+
+
+class MessagingCampaignTemplate(Base):
+    __tablename__="messaging_campaign_templates"
+    __table_args__=(Index("ix_msg_campaign_template_workspace_channel","workspace_id","channel"),)
+    id:Mapped[int]=mapped_column(BigInteger,primary_key=True,autoincrement=True)
+    workspace_id:Mapped[int]=mapped_column(ForeignKey("workspaces.id",ondelete="CASCADE"),nullable=False,index=True)
+    channel:Mapped[str]=mapped_column(String(20),nullable=False,index=True)
+    name:Mapped[str]=mapped_column(String(150),nullable=False)
+    description:Mapped[str|None]=mapped_column(Text,nullable=True)
+    steps_json:Mapped[str]=mapped_column(Text,nullable=False)
+    created_by_user_id:Mapped[int]=mapped_column(ForeignKey("users.id"),nullable=False)
+    created_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_at:Mapped[datetime]=mapped_column(DateTime,nullable=False,default=datetime.utcnow,onupdate=datetime.utcnow)
