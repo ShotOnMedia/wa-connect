@@ -59,6 +59,27 @@ def create(body:CampaignIn,db:Session=Depends(get_db),user=Depends(require_manag
     db.add(c);db.commit();db.refresh(c);return out(c,True)
 @router.get("/{cid}")
 def detail(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):return out(get(db,cid),True)
+@router.post("/{cid}/duplicate")
+def duplicate(cid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    source=get(db,cid)
+    clone=MessagingCampaign(
+        workspace_id=source.workspace_id,channel=source.channel,channel_account_id=source.channel_account_id,
+        name=(source.name+" — Copy")[:255],description=source.description,status="draft",
+        audience_type=source.audience_type,audience_filter_json=source.audience_filter_json,
+        audience_segment_id=source.audience_segment_id,scheduled_at=None,started_at=None,completed_at=None,
+        created_by_user_id=user.id,created_at=now(),updated_at=now()
+    )
+    db.add(clone);db.flush()
+    for step in sorted(source.steps,key=lambda x:x.position):
+        db.add(MessagingCampaignStep(
+            campaign_id=clone.id,position=step.position,name=step.name,delay_seconds=step.delay_seconds,
+            message_mode=step.message_mode,message_text=step.message_text,
+            provider_template_json=step.provider_template_json,parse_mode=step.parse_mode,
+            media_url=step.media_url,media_type=step.media_type,created_at=now(),updated_at=now()
+        ))
+    db.commit();db.refresh(clone)
+    return out(clone,True)
+
 @router.put("/{cid}")
 def update(cid:int,body:CampaignIn,db:Session=Depends(get_db),user=Depends(require_manager)):
     c=get(db,cid)
