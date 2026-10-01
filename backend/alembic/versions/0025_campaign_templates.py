@@ -1,13 +1,13 @@
 """campaign templates
 
-Revision ID: 0025_campaign_templates
-Revises: 0023_msg_campaigns
+Revision ID: 0026_campaign_templates
+Revises: 0025_campaign_runtime
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision="0025_campaign_templates"
-down_revision="0023_msg_campaigns"
+revision="0026_campaign_templates"
+down_revision="0025_campaign_runtime"
 branch_labels=None
 depends_on=None
 
