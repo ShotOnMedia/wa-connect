@@ -6,7 +6,7 @@ from sqlalchemy import select,func
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import require_manager
-from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep,MessagingCampaignRecipient,MessagingCampaignDelivery
+from app.campaign_engine_models import MessagingCampaign,MessagingCampaignStep,MessagingCampaignRecipient,MessagingCampaignDelivery,MessagingCampaignTemplate
 from app.models import Workspace,WhatsAppAccount,WhatsAppPhoneNumber
 from app.telegram_models import TelegramBot
 from app.api.broadcasts import AudienceFilter,audience,field_values,_system_values,render,whatsapp_audience,whatsapp_field_values,whatsapp_system_values,whatsapp_render,render_provider_payload,unresolved_provider_tokens
@@ -46,6 +46,49 @@ def get(db,cid):
     c=db.get(MessagingCampaign,cid)
     if not c:raise HTTPException(404,"Campaign not found")
     return c
+
+class CampaignTemplateIn(BaseModel):
+    name:str=Field(min_length=1,max_length=150);description:str|None=None
+
+def template_out(t):
+    steps=json.loads(t.steps_json or "[]")
+    return {"id":t.id,"name":t.name,"description":t.description,"channel":t.channel,"step_count":len(steps),"steps":steps,"created_at":t.created_at,"updated_at":t.updated_at}
+
+@router.get("/templates")
+def template_listing(channel:str,db:Session=Depends(get_db),user=Depends(require_manager)):
+    return [template_out(x) for x in db.scalars(select(MessagingCampaignTemplate).where(MessagingCampaignTemplate.channel==channel).order_by(MessagingCampaignTemplate.updated_at.desc())).all()]
+
+@router.post("/{cid}/save-as-template")
+def save_as_template(cid:int,body:CampaignTemplateIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    source=get(db,cid)
+    steps=[{"name":s.name,"delay_seconds":s.delay_seconds,"message_mode":s.message_mode,"message_text":s.message_text,"provider_template":json.loads(s.provider_template_json) if s.provider_template_json else None,"parse_mode":s.parse_mode,"media_url":s.media_url,"media_type":s.media_type} for s in sorted(source.steps,key=lambda x:x.position)]
+    if not steps:raise HTTPException(422,"Campaign must contain at least one message")
+    t=MessagingCampaignTemplate(workspace_id=source.workspace_id,channel=source.channel,name=body.name.strip(),description=body.description,steps_json=json.dumps(steps),created_by_user_id=user.id,created_at=now(),updated_at=now())
+    db.add(t);db.commit();db.refresh(t);return template_out(t)
+
+@router.post("/templates/{tid}/create-campaign")
+def create_from_template(tid:int,body:CampaignIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    t=db.get(MessagingCampaignTemplate,tid)
+    if not t:raise HTTPException(404,"Campaign template not found")
+    if body.channel!=t.channel:raise HTTPException(422,"Template channel does not match campaign channel")
+    wid=workspace_for(db,body.channel,body.channel_account_id)
+    c=MessagingCampaign(workspace_id=wid,channel=body.channel,channel_account_id=body.channel_account_id,name=body.name.strip(),description=body.description,status="draft",audience_type=body.audience_type,audience_filter_json=json.dumps(body.audience_filter) if body.audience_filter else None,audience_segment_id=body.audience_segment_id,created_by_user_id=user.id,created_at=now(),updated_at=now())
+    db.add(c);db.flush()
+    for pos,s in enumerate(json.loads(t.steps_json or "[]"),1):
+        db.add(MessagingCampaignStep(campaign_id=c.id,position=pos,name=s["name"],delay_seconds=s.get("delay_seconds",0),message_mode=s.get("message_mode","freeform"),message_text=s["message_text"],provider_template_json=json.dumps(s.get("provider_template")) if s.get("provider_template") else None,parse_mode=s.get("parse_mode","HTML"),media_url=s.get("media_url"),media_type=s.get("media_type"),created_at=now(),updated_at=now()))
+    db.commit();db.refresh(c);return out(c,True)
+
+@router.put("/templates/{tid}")
+def update_template(tid:int,body:CampaignTemplateIn,db:Session=Depends(get_db),user=Depends(require_manager)):
+    t=db.get(MessagingCampaignTemplate,tid)
+    if not t:raise HTTPException(404,"Campaign template not found")
+    t.name=body.name.strip();t.description=body.description;t.updated_at=now();db.commit();db.refresh(t);return template_out(t)
+
+@router.delete("/templates/{tid}",status_code=204)
+def delete_template(tid:int,db:Session=Depends(get_db),user=Depends(require_manager)):
+    t=db.get(MessagingCampaignTemplate,tid)
+    if not t:raise HTTPException(404,"Campaign template not found")
+    db.delete(t);db.commit();return Response(status_code=204)
 
 @router.get("")
 def listing(channel:str|None=None,db:Session=Depends(get_db),user=Depends(require_manager)):
