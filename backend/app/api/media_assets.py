@@ -7,12 +7,18 @@ from app.core.security import require_manager
 from app.services.media_storage import get_storage_setting,store_media
 from app.storage_models import MediaAsset
 from app.telegram_models import TelegramBot
+from app.models import WhatsAppPhoneNumber,WhatsAppAccount
 
 router=APIRouter(prefix="/media-assets",tags=["Media Assets"],dependencies=[Depends(require_manager)])
 
-def workspace_for_bot(db:Session,bot_id:int)->int:
-    wid=db.scalar(select(TelegramBot.workspace_id).where(TelegramBot.id==bot_id,TelegramBot.active.is_(True)))
-    if wid is None:raise HTTPException(404,"Telegram bot not found")
+def workspace_for_account(db:Session,bot_id:int|None=None,phone_number_id:int|None=None)->int:
+    if bool(bot_id)==bool(phone_number_id):raise HTTPException(422,"Specify exactly one channel account")
+    if bot_id:
+        wid=db.scalar(select(TelegramBot.workspace_id).where(TelegramBot.id==bot_id,TelegramBot.active.is_(True)))
+        if wid is None:raise HTTPException(404,"Telegram bot not found")
+        return int(wid)
+    wid=db.scalar(select(WhatsAppAccount.workspace_id).join(WhatsAppPhoneNumber,WhatsAppPhoneNumber.whatsapp_account_id==WhatsAppAccount.id).where(WhatsAppPhoneNumber.id==phone_number_id,WhatsAppPhoneNumber.active.is_(True)))
+    if wid is None:raise HTTPException(404,"WhatsApp connection not found")
     return int(wid)
 def output(a):
     return {"id":a.id,"name":a.name,"content_type":a.content_type,"media_type":a.media_type,"size_bytes":a.size_bytes,"url":a.url,"created_at":a.created_at}
@@ -23,14 +29,14 @@ def kind(content_type:str)->str:
     return "file"
 
 @router.get("")
-def list_assets(bot_id:int,db:Session=Depends(get_db)):
-    wid=workspace_for_bot(db,bot_id)
+def list_assets(bot_id:int|None=None,phone_number_id:int|None=None,db:Session=Depends(get_db)):
+    wid=workspace_for_account(db,bot_id,phone_number_id)
     rows=db.scalars(select(MediaAsset).where(MediaAsset.workspace_id==wid).order_by(MediaAsset.created_at.desc()).limit(200)).all()
     return [output(x) for x in rows]
 
 @router.post("")
-async def upload_asset(bot_id:int,file:UploadFile=File(...),db:Session=Depends(get_db),user=Depends(require_manager)):
-    wid=workspace_for_bot(db,bot_id);setting=get_storage_setting(db)
+async def upload_asset(file:UploadFile=File(...),bot_id:int|None=None,phone_number_id:int|None=None,db:Session=Depends(get_db),user=Depends(require_manager)):
+    wid=workspace_for_account(db,bot_id,phone_number_id);setting=get_storage_setting(db)
     limit=max(1,int(setting.max_upload_mb or 25))*1024*1024
     data=await file.read(limit+1)
     if not data:raise HTTPException(422,"The selected file is empty")
